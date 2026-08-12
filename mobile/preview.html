@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Token Stats Preview</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="screen app">
+      <header class="top">
+        <div>
+          <div class="top-title"><span class="brand-dot"></span>Token Stats</div>
+          <div class="top-sub">me@example.com · 同步 3 分钟前</div>
+        </div>
+        <div class="top-actions">
+          <button type="button" class="btn ghost sm">¥</button>
+          <button type="button" class="btn ghost sm">刷新</button>
+        </div>
+      </header>
+
+      <div class="global-filters">
+        <div class="chip-scroll">
+          <button class="f-chip">今天</button>
+          <button class="f-chip on">7 天</button>
+          <button class="f-chip">30 天</button>
+          <button class="f-chip">全部</button>
+          <button class="f-chip">筛选 2</button>
+        </div>
+      </div>
+
+      <main class="main">
+        <div class="stack">
+          <h1 class="page-title">概览</h1>
+
+          <section class="hero-card">
+            <div class="label">Total Tokens · 近 7 天</div>
+            <div class="hero-num">128.4M</div>
+            <div class="hero-meta">
+              <span>342 会话</span>
+              <span>¥86.20</span>
+              <button type="button" class="link-btn">藏成本</button>
+            </div>
+            <div class="hero-deltas">
+              <span>今日 12.6M<em> +18%</em></span>
+              <span>本周 128.4M<em> +6%</em></span>
+            </div>
+            <div class="hero-foot">桌面上传于 2026-08-07 14:32 · DESKTOP · 含小时桶</div>
+          </section>
+
+          <section class="card">
+            <div class="card-title">分项</div>
+            <div class="metrics">
+              <div class="metric"><div class="m-label">Input</div><div class="m-value">4.2M</div></div>
+              <div class="metric"><div class="m-label">Output</div><div class="m-value">892K</div></div>
+              <div class="metric"><div class="m-label">Cache R</div><div class="m-value">118M</div></div>
+              <div class="metric"><div class="m-label">Cache W</div><div class="m-value">3.1M</div></div>
+              <div class="metric"><div class="m-label">Reason</div><div class="m-value">412K</div></div>
+              <div class="metric"><div class="m-label">汇率 · 08-07</div><div class="m-value">7.16</div></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div class="card-title">用量趋势</div>
+              <button type="button" class="link-btn">按工具</button>
+            </div>
+            <div class="panel-hint">按天 · 7 天 · turn 时间</div>
+            <div class="trend-legend">
+              <span class="trend-legend-item"><i class="swatch" style="background:#35b586"></i>opencode</span>
+              <span class="trend-legend-item"><i class="swatch" style="background:#d98e5f"></i>claude</span>
+              <span class="trend-legend-item"><i class="swatch" style="background:#9385d9"></i>grok</span>
+            </div>
+            <div class="trend">
+              <div class="trend-cols fill" id="trendCols">
+                <div class="trend-y"><span>32M</span><span>16M</span><span>0</span></div>
+                <div class="trend-grid"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-title">活跃热力图</div>
+            <div class="panel-hint">近 26 周 · 生涯全量</div>
+            <div class="heat-scroll">
+              <div class="heat-months" id="heatMonths"></div>
+              <div class="heat-body" id="heatBody"></div>
+            </div>
+            <div class="heat-legend">
+              少
+              <i class="heat-cell lv0"></i><i class="heat-cell lv1"></i><i class="heat-cell lv2"></i><i class="heat-cell lv3"></i><i class="heat-cell lv4"></i>
+              多
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-title">按工具分布</div>
+            <div class="dist-bar">
+              <div class="seg" style="width:52%;background:#35b586"></div>
+              <div class="seg" style="width:23%;background:#d98e5f"></div>
+              <div class="seg" style="width:15%;background:#9385d9"></div>
+              <div class="seg" style="width:10%;background:#5ea3c7"></div>
+            </div>
+            <ul class="client-list">
+              <li><span class="dot" style="background:#35b586"></span><span class="name">opencode</span><span class="count">182 · 52%</span><span class="tok">66.8M</span></li>
+              <li><span class="dot" style="background:#d98e5f"></span><span class="name">claude</span><span class="count">74 · 23%</span><span class="tok">29.5M</span></li>
+              <li><span class="dot" style="background:#9385d9"></span><span class="name">grok</span><span class="count">51 · 15%</span><span class="tok">19.3M</span></li>
+              <li><span class="dot" style="background:#5ea3c7"></span><span class="name">kimi</span><span class="count">35 · 10%</span><span class="tok">12.8M</span></li>
+            </ul>
+          </section>
+
+          <section class="card">
+            <div class="card-title">按模型分布</div>
+            <div class="dist-bar">
+              <div class="seg" style="width:44%;background:#35b586"></div>
+              <div class="seg" style="width:31%;background:#5ea3c7"></div>
+              <div class="seg" style="width:17%;background:#d98e5f"></div>
+              <div class="seg" style="width:8%;background:#c97698"></div>
+            </div>
+            <ul class="client-list">
+              <li><span class="dot" style="background:#35b586"></span><span class="name model-name">mimo-v2.5</span><span class="count">44%</span><span class="tok">56.5M</span></li>
+              <li><span class="dot" style="background:#5ea3c7"></span><span class="name model-name">kimi-for-coding</span><span class="count">31%</span><span class="tok">39.8M</span></li>
+              <li><span class="dot" style="background:#d98e5f"></span><span class="name model-name">claude-sonnet-4.5</span><span class="count">17%</span><span class="tok">21.8M</span></li>
+              <li><span class="dot" style="background:#c97698"></span><span class="name model-name">GLM-5.2</span><span class="count">8%</span><span class="tok">10.3M</span></li>
+            </ul>
+          </section>
+        </div>
+      </main>
+
+      <nav class="tabbar">
+        <button class="active">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 20V11m5.5 9V4M15 20v-6m5.5 6V8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>概览</span>
+        </button>
+        <button>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>分析</span>
+        </button>
+        <button>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 6.5h16M4 12h16M4 17.5h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>会话</span>
+        </button>
+        <button>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 8h6m4 0h6M4 16h2m4 0h10M12 8a2 2 0 1 0 0.01 0M8 16a2 2 0 1 0 0.01 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>设置</span>
+        </button>
+      </nav>
+    </div>
+
+    <script>
+      const theme = new URLSearchParams(location.search).get("theme");
+      if (theme) document.documentElement.dataset.theme = theme;
+      if (new URLSearchParams(location.search).has("flat")) {
+        const st = document.createElement("style");
+        st.textContent =
+          ".screen.app{height:auto!important;padding-bottom:0!important}" +
+          ".main{overflow:visible!important}" +
+          ".tabbar{position:static!important}";
+        document.head.appendChild(st);
+      }
+
+      // 伪随机（固定种子，保证两次截图一致）
+      let seed = 42;
+      const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+      // 趋势柱：7 天，2-3 段堆叠
+      const colors = ["#35b586", "#d98e5f", "#9385d9"];
+      const cols = document.getElementById("trendCols");
+      const days = ["08-01", "08-02", "08-03", "08-04", "08-05", "08-06", "08-07"];
+      const heights = [38, 22, 55, 70, 46, 30, 88];
+      days.forEach((d, i) => {
+        const col = document.createElement("div");
+        col.className = "trend-col";
+        const bar = document.createElement("div");
+        bar.className = "trend-bar";
+        let left = heights[i];
+        const nSeg = 1 + Math.floor(rnd() * 3);
+        for (let s = 0; s < nSeg; s++) {
+          const h = s === nSeg - 1 ? left : Math.round(left * (0.25 + rnd() * 0.4));
+          left -= h;
+          if (h <= 0) continue;
+          const seg = document.createElement("div");
+          seg.className = "seg" + (s === nSeg - 1 ? " seg-top" : "");
+          seg.style.height = h + "%";
+          seg.style.background = colors[s % colors.length];
+          bar.appendChild(seg);
+        }
+        const lab = document.createElement("div");
+        lab.className = "trend-day";
+        const sp = document.createElement("span");
+        sp.textContent = d;
+        lab.appendChild(sp);
+        col.className = "trend-col has-label";
+        col.appendChild(bar);
+        col.appendChild(lab);
+        cols.appendChild(col);
+      });
+
+      // 热力图：26 周 × 7 天
+      const body = document.getElementById("heatBody");
+      const months = document.getElementById("heatMonths");
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const start = new Date(today);
+      start.setDate(start.getDate() - ((start.getDay() + 6) % 7) - 25 * 7);
+      const cursor = new Date(start);
+      let prevM = "";
+      for (let w = 0; w < 26; w++) {
+        const mSpan = document.createElement("span");
+        const m = String(cursor.getMonth() + 1) + "月";
+        mSpan.textContent = m !== prevM ? m : "";
+        prevM = m;
+        months.appendChild(mSpan);
+        const week = document.createElement("div");
+        week.className = "heat-week";
+        for (let d = 0; d < 7; d++) {
+          const cell = document.createElement("div");
+          const future = cursor.getTime() > today.getTime();
+          const r = rnd();
+          const lv = future ? 0 : r < 0.35 ? 0 : r < 0.6 ? 1 : r < 0.78 ? 2 : r < 0.92 ? 3 : 4;
+          cell.className = `heat-cell lv${lv}${future ? " future" : ""}`;
+          week.appendChild(cell);
+          cursor.setDate(cursor.getDate() + 1);
+        }
+        body.appendChild(week);
+      }
+    </script>
+  </body>
+</html>

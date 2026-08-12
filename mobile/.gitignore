@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.idea/
+.vscode/
+
+# Android local
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+android/.idea/
+android/*.jks
+android/*.keystore
+android/keystore.properties
+*.apk
+*.aab

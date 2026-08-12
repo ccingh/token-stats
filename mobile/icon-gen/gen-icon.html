@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>icon gen</title>
+  </head>
+  <body>
+    <script>
+      // Token Stats 图标：深色底 + emerald 柱形标（对齐 app 内趋势图语义）
+      const BG = "#0a0a0b";
+      const GREEN = "#34c759";
+
+      function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function draw(ctx, S, variant) {
+        ctx.clearRect(0, 0, S, S);
+        if (variant !== "fg") {
+          ctx.fillStyle = BG;
+          if (variant === "round") {
+            ctx.beginPath();
+            ctx.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillRect(0, 0, S, S);
+          }
+        }
+        // 柱形：4 根圆角柱，底对齐，最高柱垂直居中
+        // fg（自适应图标前景）收敛在安全圆内（66/108≈61%）
+        const box = S * (variant === "fg" ? 0.54 : 0.6);
+        const hs = [0.5625, 1, 0.40625, 0.75]; // 对应 9/16/6.5/12
+        const bw = box * (3.4 / 20.5);
+        const gap = box * (2.3 / 20.5);
+        const totalW = 4 * bw + 3 * gap;
+        const x0 = (S - totalW) / 2;
+        const yBase = (S + box) / 2; // 最高柱的底边
+        ctx.fillStyle = GREEN;
+        hs.forEach((r, i) => {
+          const h = box * r;
+          roundRect(ctx, x0 + i * (bw + gap), yBase - h, bw, h, bw * 0.34);
+          ctx.fill();
+        });
+      }
+
+      function render(S, variant) {
+        const c = document.createElement("canvas");
+        c.width = S;
+        c.height = S;
+        draw(c.getContext("2d"), S, variant);
+        return c.toDataURL("image/png");
+      }
+
+      // 生成全部密度；返回 { 相对路径: dataURL }
+      window.generateAll = function () {
+        const dpi = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 };
+        const out = {};
+        for (const [name, scale] of Object.entries(dpi)) {
+          const dir = `mipmap-${name}`;
+          out[`${dir}/ic_launcher_foreground.png`] = render(Math.round(108 * scale), "fg");
+          out[`${dir}/ic_launcher.png`] = render(Math.round(48 * scale), "square");
+          out[`${dir}/ic_launcher_round.png`] = render(Math.round(48 * scale), "round");
+        }
+        // 预览用大图
+        out["icon-preview.png"] = render(512, "square");
+        return out;
+      };
+    </script>
+  </body>
+</html>

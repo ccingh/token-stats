@@ -1,0 +1,38 @@
+# dependencies & build
+node_modules/
+dist/
+dist-electron/
+out/
+release/
+*.tsbuildinfo
+
+# env & logs
+.DS_Store
+*.log
+.env
+.env.*
+
+# mobile / android build & toolchains
+mobile/node_modules/
+mobile/dist/
+mobile/.jdk/
+mobile/.gradle-dist/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/local.properties
+mobile/android/**/keystore.properties
+mobile/**/build/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# local / editor
+scripts/_probe-*.mjs
+.idea/
+.vscode/
+*.swp
+shot-full.png
+*.blockmap
+

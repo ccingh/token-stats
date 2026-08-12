@@ -1,0 +1,44 @@
+{
+  "appId": "com.tokenstats.desktop.local",
+  "productName": "Token Stats Local",
+  "copyright": "Copyright © CCingh",
+  "directories": {
+    "output": "release",
+    "buildResources": "assets"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "assets/icons/**/*",
+    "package.json"
+  ],
+  "asar": true,
+  "asarUnpack": [
+    "electron/**/*",
+    "assets/icons/**/*"
+  ],
+  "extraMetadata": {
+    "main": "electron/main.cjs"
+  },
+  "win": {
+    "icon": "assets/icons/icon.ico",
+    "signAndEditExecutable": true,
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "${productName}-${version}-nosync-setup.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Token Stats Local",
+    "installerIcon": "assets/icons/icon.ico",
+    "uninstallerIcon": "assets/icons/icon.ico",
+    "installerHeaderIcon": "assets/icons/icon.ico"
+  }
+}
