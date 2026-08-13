@@ -12,7 +12,7 @@
  *   真正的逐请求分段需 turn 级明细后再做。
  * - 缓存：若 cacheRead ≤ input，默认 input 含缓存子集，计费用 (input-cache)*input价 + cache*缓存价
  *
- * 价格核对日期：2026-08-07（公开文档，会随厂商调价过期）
+ * 价格核对日期：2026-08-13（公开文档，会随厂商调价过期）
  *
  * @typedef {{ input: number, output: number, cacheRead?: number, cacheWrite?: number }} Price
  * @typedef {Price & { upTo: number }} PriceTier  // upTo: 该档最大输入 token（不含上界用 Infinity）
@@ -29,9 +29,18 @@
 
 /** @type {Record<string, ModelPrice>} */
 const PRICES = {
-  // ─── Anthropic（官方仅 USD，无 CNY 刊例）───────────────────────────
+  // ─── Anthropic（官方仅 USD，platform.claude.com/docs pricing）────
+  // 2026-08：Opus 5 $5/$25；Sonnet 5 促销 $2/$10（至 8/31）；Haiku 4.5 $1/$5
+  // 旧 Opus 4 / 4.1 仍是 $15/$75
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4.8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4.7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-opus-4.6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-opus-4": { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  "claude-sonnet-4.6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-haiku-4.5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   "claude-3-7-sonnet": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-3-5-sonnet": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-3-5-haiku": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
@@ -50,7 +59,7 @@ const PRICES = {
   "kimi-k2.7-code-highspeed": {
     input: 1.9,
     output: 8,
-    cacheRead: 0.26,
+    cacheRead: 0.38,
     cny: { input: 13, output: 54, cacheRead: 2.6 },
   },
   "kimi-k2.7-code": {
@@ -94,9 +103,30 @@ const PRICES = {
     cny: { input: 20, output: 100, cacheRead: 2 },
   },
 
-  // ─── xAI Grok（官方仅 USD）─────────────────────────────────────────
+  // ─── xAI Grok（官方仅 USD，docs.x.ai/developers/pricing）───────────
+  // grok-4.6：短上下文（<200k）$2 / $6 / 缓存 $0.50；≥200k 翻倍
+  // 会话级估算固定用基础档（与文件头约定一致）
+  "grok-4.6": {
+    input: 2,
+    output: 6,
+    cacheRead: 0.5,
+    tiers: [
+      { upTo: 200000, input: 2, output: 6, cacheRead: 0.5 },
+      { upTo: Infinity, input: 4, output: 12, cacheRead: 1 },
+    ],
+  },
   "grok-4-fast": { input: 0.2, output: 0.5, cacheRead: 0.05 },
-  "grok-4.5": { input: 3, output: 15, cacheRead: 0.75 },
+  // grok-4.5：短上下文 $2 / $6 / 缓存 $0.30（docs.x.ai，2026-08）
+  "grok-4.5": {
+    input: 2,
+    output: 6,
+    cacheRead: 0.3,
+    tiers: [
+      { upTo: 200000, input: 2, output: 6, cacheRead: 0.3 },
+      { upTo: Infinity, input: 4, output: 12, cacheRead: 0.6 },
+    ],
+  },
+  // 已下线的 grok-4 历史刊例（旧会话）
   "grok-4": { input: 3, output: 15, cacheRead: 0.75 },
   "grok-3-mini": { input: 0.3, output: 0.5 },
   "grok-3": { input: 3, output: 15 },
@@ -105,6 +135,20 @@ const PRICES = {
   // GLM-5.2：输入 ¥8 / 输出 ¥28 / 缓存命中 ¥2；[32k+) 更高档
   // GLM-5：0–32k ¥4/¥18/缓存¥1；32k+ ¥6/¥22/¥1.5
   // GLM-4.7：0–32k 短输出 ¥2/¥8/¥0.4；更长档更高
+  "glm-5.1": {
+    input: 1.05,
+    output: 4.2,
+    cacheRead: 0.23,
+    cny: { input: 6, output: 24, cacheRead: 1.3 },
+    tiers: [
+      { upTo: 32000, input: 1.05, output: 4.2, cacheRead: 0.23 },
+      { upTo: Infinity, input: 1.4, output: 4.9, cacheRead: 0.35 },
+    ],
+    cnyTiers: [
+      { upTo: 32000, input: 6, output: 24, cacheRead: 1.3 },
+      { upTo: Infinity, input: 8, output: 28, cacheRead: 2 },
+    ],
+  },
   "glm-5.2": {
     input: 1.4,
     output: 4.4,
@@ -362,6 +406,7 @@ const KEYS = Object.keys(PRICES).sort((a, b) => b.length - a.length);
  * 例：session.model = {"id":"k3","providerID":"kimi-for-coding"} → 展示名 k3
  */
 const MODEL_ALIASES = {
+  "grok 4.6": "grok-4.6",
   k3: "kimi-k3",
   "kimi-for-coding/k3": "kimi-k3",
   k2p7: "kimi-k2.7-code",

@@ -175,12 +175,6 @@ token-stats/
 
 ---
 
-## 许可证与作者
+## License
 
-Copyright © **CCingh** \<ccingh@proton.me\>
-
-本仓库由 **CCingh** 维护。提交与包元数据作者固定为：
-
-```text
-CCingh <ccingh@proton.me>
-```
+[MIT](./LICENSE) © CCingh

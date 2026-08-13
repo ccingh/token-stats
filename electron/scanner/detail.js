@@ -10,6 +10,7 @@ import * as zcode from "./adapters/zcode.js";
 import * as opencode from "./adapters/opencode.js";
 import * as pi from "./adapters/pi.js";
 import * as reasonix from "./adapters/reasonix.js";
+import * as grok from "./adapters/grok.js";
 import * as mimocode from "./adapters/mimocode.js";
 import { agentPaths } from "./paths.js";
 import { toIso } from "./types.js";
@@ -25,46 +26,90 @@ async function grokDetail(sessionId) {
   /** @type {Map<string, any>} */
   const byModel = new Map();
 
-  let model = "grok-4.5";
-  const sessionsRoot = agentPaths().grokSessions;
-  const findSummary = (d, depth = 0) => {
-    if (depth > 6) return null;
-    let entries;
+  const dir = grok.findSessionDir(sessionId);
+  let summary = null;
+  if (dir) {
     try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
+      summary = JSON.parse(
+        fs.readFileSync(path.join(dir, "summary.json"), "utf8")
+      );
     } catch {
-      return null;
+      summary = null;
     }
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (e.name === sessionId) {
-        const sp = path.join(d, e.name, "summary.json");
-        if (fs.existsSync(sp)) {
-          try {
-            return JSON.parse(fs.readFileSync(sp, "utf8"));
-          } catch {
-            return null;
-          }
-        }
-      }
-      const hit = findSummary(path.join(d, e.name), depth + 1);
-      if (hit) return hit;
-    }
-    return null;
-  };
-  const summary = findSummary(sessionsRoot);
-  if (summary?.current_model_id) {
-    model = String(summary.current_model_id).replace(/-build$/, "");
   }
-  // 会话级角色（Grok 无 per-turn agent 时整表用此标签）
+  // current_model_id 只是「当前」模型，不能拿来盖历史 turn
+  const sessionFallbackModel = grok.normalizeGrokModel(
+    summary?.current_model_id
+  );
   const sessionAgent = normalizeAgentName(summary?.agent_name);
 
-  if (fs.existsSync(logPath)) {
+  /**
+   * @param {{
+   *   ts?: string,
+   *   model?: string,
+   *   inputTokens: number,
+   *   outputTokens: number,
+   *   cacheReadTokens: number,
+   *   reasoningTokens: number,
+   *   loopIndex?: number,
+   * }} row
+   */
+  const pushTurn = (row) => {
+    const model = row.model || undefined;
+    const key = model || "未知模型";
+    turns.push({
+      index: turns.length + 1,
+      ts: row.ts,
+      model,
+      agentName: sessionAgent,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      cacheWriteTokens: 0,
+      reasoningTokens: row.reasoningTokens,
+      loopIndex: row.loopIndex,
+    });
+    const cur = byModel.get(key) || {
+      model: key,
+      turns: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      reasoning: 0,
+    };
+    cur.turns += 1;
+    cur.input += row.inputTokens;
+    cur.output += row.outputTokens;
+    cur.cacheRead += row.cacheReadTokens;
+    cur.reasoning += row.reasoningTokens;
+    byModel.set(key, cur);
+  };
+
+  // 优先 updates.jsonl：每 turn 自带 modelUsage，切模型后历史仍正确
+  if (dir) {
+    try {
+      const { events } = await grok.loadGrokTurnEvents(dir);
+      for (const ev of events) {
+        pushTurn({
+          ts: toIso(ev.ts) || undefined,
+          model: ev.model,
+          inputTokens: ev.input,
+          outputTokens: ev.output,
+          cacheReadTokens: ev.cacheRead,
+          reasoningTokens: ev.reasoning,
+        });
+      }
+    } catch (err) {
+      console.error("[grok] detail updates failed", sessionId, err);
+    }
+  }
+
+  // 没有 turn_completed 时才退回 unified；有模型字段用字段，否则才用当前模型
+  if (turns.length === 0 && fs.existsSync(logPath)) {
     const rl = readline.createInterface({
       input: fs.createReadStream(logPath, { encoding: "utf8" }),
       crlfDelay: Infinity,
     });
-    let i = 0;
     for await (const line of rl) {
       if (!line.includes(sessionId) || !line.includes("inference_done")) continue;
       let obj;
@@ -82,111 +127,18 @@ async function grokDetail(sessionId) {
       const uncached = cached > 0 && cached <= prompt ? prompt - cached : prompt;
       const out =
         reasoning > 0 && reasoning <= completion ? completion - reasoning : completion;
-      i += 1;
-      turns.push({
-        index: i,
-        ts: toIso(obj.ts),
-        model,
-        agentName: sessionAgent,
+      pushTurn({
+        ts: toIso(obj.ts) || undefined,
+        model:
+          grok.normalizeGrokModel(
+            ctx.model || ctx.model_id || obj.model || obj.model_id
+          ) || sessionFallbackModel,
         inputTokens: uncached,
         outputTokens: out,
         cacheReadTokens: cached,
-        cacheWriteTokens: 0,
         reasoningTokens: reasoning,
         loopIndex: ctx.loop_index != null ? Number(ctx.loop_index) : undefined,
       });
-      const cur = byModel.get(model) || {
-        model,
-        turns: 0,
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        reasoning: 0,
-      };
-      cur.turns += 1;
-      cur.input += uncached;
-      cur.output += out;
-      cur.cacheRead += cached;
-      cur.reasoning += reasoning;
-      byModel.set(model, cur);
-    }
-  }
-
-  if (turns.length === 0 && summary) {
-    const findDir = (d, depth = 0) => {
-      if (depth > 6) return null;
-      let entries;
-      try {
-        entries = fs.readdirSync(d, { withFileTypes: true });
-      } catch {
-        return null;
-      }
-      for (const e of entries) {
-        if (!e.isDirectory()) continue;
-        if (e.name === sessionId) return path.join(d, e.name);
-        const hit = findDir(path.join(d, e.name), depth + 1);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    const dir = findDir(sessionsRoot);
-    const up = dir && path.join(dir, "updates.jsonl");
-    if (up && fs.existsSync(up)) {
-      const rl = readline.createInterface({
-        input: fs.createReadStream(up, { encoding: "utf8" }),
-        crlfDelay: Infinity,
-      });
-      let i = 0;
-      for await (const line of rl) {
-        if (!line.includes("turn_completed") || !line.includes("usage")) continue;
-        try {
-          const o = JSON.parse(line);
-          const us = o.params?.update?.usage;
-          if (!us) continue;
-          const prompt = Number(us.inputTokens) || 0;
-          const cached = Number(us.cachedReadTokens) || 0;
-          const completion = Number(us.outputTokens) || 0;
-          const reasoning = Number(us.reasoningTokens) || 0;
-          const uncached = cached > 0 && cached <= prompt ? prompt - cached : prompt;
-          const out =
-            reasoning > 0 && reasoning <= completion
-              ? completion - reasoning
-              : completion;
-          let m = model;
-          if (us.modelUsage && typeof us.modelUsage === "object") {
-            const keys = Object.keys(us.modelUsage);
-            if (keys.length) m = keys[keys.length - 1].replace(/-build$/, "");
-          }
-          i += 1;
-          turns.push({
-            index: i,
-            ts: undefined,
-            model: m,
-            agentName: sessionAgent,
-            inputTokens: uncached,
-            outputTokens: out,
-            cacheReadTokens: cached,
-            cacheWriteTokens: 0,
-            reasoningTokens: reasoning,
-          });
-          const cur = byModel.get(m) || {
-            model: m,
-            turns: 0,
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            reasoning: 0,
-          };
-          cur.turns += 1;
-          cur.input += uncached;
-          cur.output += out;
-          cur.cacheRead += cached;
-          cur.reasoning += reasoning;
-          byModel.set(m, cur);
-        } catch {
-          /* skip */
-        }
-      }
     }
   }
 

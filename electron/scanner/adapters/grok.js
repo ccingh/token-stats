@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { agentPaths } from "../paths.js";
 import { makeSession, toIso } from "../types.js";
 import { normalizeAgentName } from "../agentLabel.js";
+import { parseTs } from "../hourly.js";
 
 export const id = "grok";
 export const displayName = "Grok Build";
@@ -82,6 +83,214 @@ function splitGrokUsage(raw) {
 }
 
 /**
+ * Grok 日志里的模型 id 常带 `-build` 后缀，统计时去掉。
+ * @param {unknown} raw
+ * @returns {string | undefined}
+ */
+export function normalizeGrokModel(raw) {
+  if (raw == null) return undefined;
+  const s = String(raw)
+    .replace(/-build$/i, "")
+    .trim();
+  return s || undefined;
+}
+
+/**
+ * @param {string} sessionId
+ * @returns {string | null}
+ */
+export function findSessionDir(sessionId) {
+  const root = agentPaths().grokSessions;
+  if (!sessionId || !fs.existsSync(root)) return null;
+  const walk = (d, depth) => {
+    if (depth > 8) return null;
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === sessionId) {
+        const dir = path.join(d, e.name);
+        if (fs.existsSync(path.join(dir, "summary.json"))) return dir;
+      }
+      const hit = walk(path.join(d, e.name), depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(root, 0);
+}
+
+/**
+ * @param {any} raw
+ */
+function usageFromRaw(raw) {
+  return splitGrokUsage({
+    prompt: raw?.inputTokens ?? raw?.prompt_tokens,
+    cached: raw?.cachedReadTokens ?? raw?.cached_prompt_tokens,
+    completion: raw?.outputTokens ?? raw?.completion_tokens,
+    reasoning: raw?.reasoningTokens ?? raw?.reasoning_tokens,
+  });
+}
+
+/**
+ * @param {any} obj
+ * @param {any} update
+ * @param {any} us
+ */
+function turnTimestamp(obj, update, us) {
+  return (
+    update?.timestamp ||
+    obj?.params?._meta?.agentTimestampMs ||
+    obj?.timestamp ||
+    obj?.ts ||
+    us?.timestamp ||
+    null
+  );
+}
+
+/**
+ * 按 turn_completed.modelUsage 拆出每 turn 的真实模型。
+ * 不要用 summary.current_model_id 盖历史——那只是「当前」模型。
+ *
+ * @param {string} sessionDir
+ * @returns {Promise<{
+ *   agg: UsageAgg | null,
+ *   events: Array<{
+ *     ts: any,
+ *     t: number | null,
+ *     model?: string,
+ *     input: number,
+ *     output: number,
+ *     cacheRead: number,
+ *     reasoning: number,
+ *     requests: number,
+ *   }>
+ * }>}
+ */
+export async function loadGrokTurnEvents(sessionDir) {
+  const updatesPath = path.join(sessionDir, "updates.jsonl");
+  /** @type {any[]} */
+  const events = [];
+  /** @type {UsageAgg} */
+  const cur = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    reasoning: 0,
+    turns: 0,
+    requests: 0,
+  };
+  if (!fs.existsSync(updatesPath)) return { agg: null, events };
+
+  const stream = fs.createReadStream(updatesPath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let found = false;
+
+  for await (const line of rl) {
+    if (!line.includes("turn_completed") || !line.includes("usage")) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const update = obj.params?.update;
+    if (!update || update.sessionUpdate !== "turn_completed") continue;
+    const us = update.usage;
+    if (!us || typeof us !== "object") continue;
+
+    found = true;
+    const ts = turnTimestamp(obj, update, us);
+    const t = parseTs(ts)?.getTime() ?? null;
+    const mu =
+      us.modelUsage && typeof us.modelUsage === "object" ? us.modelUsage : null;
+    const keys = mu ? Object.keys(mu) : [];
+
+    /** @type {{ model?: string, raw: any, requests: number }[]} */
+    const parts = keys.length
+      ? keys.map((k) => {
+          const row = mu[k] && typeof mu[k] === "object" ? mu[k] : us;
+          return {
+            model: normalizeGrokModel(k),
+            raw: row,
+            requests: Math.max(
+              1,
+              Number(row?.modelCalls) || Number(us.modelCalls) || 1
+            ),
+          };
+        })
+      : [
+          {
+            model: undefined,
+            raw: us,
+            requests: Math.max(1, Number(us.modelCalls) || 1),
+          },
+        ];
+
+    let countedTurn = false;
+    for (const p of parts) {
+      const tok = usageFromRaw(p.raw);
+      cur.input += tok.input;
+      cur.output += tok.output;
+      cur.cacheRead += tok.cacheRead;
+      cur.reasoning += tok.reasoning;
+      if (!countedTurn) {
+        cur.turns += 1;
+        countedTurn = true;
+      }
+      cur.requests += p.requests;
+      if (ts) cur.lastTs = toIso(ts) || cur.lastTs;
+      events.push({
+        ts,
+        t,
+        model: p.model,
+        input: tok.input,
+        output: tok.output,
+        cacheRead: tok.cacheRead,
+        reasoning: tok.reasoning,
+        requests: p.requests,
+      });
+    }
+  }
+
+  return { agg: found ? cur : null, events };
+}
+
+/**
+ * 用 turn_completed 时间线给 inference_done 对模型。
+ * 匹配不到且会话混用过多模型时返回 undefined，绝不拿 current_model_id 硬盖。
+ *
+ * @param {{ t: number | null, model?: string }[]} events
+ * @param {any} ts
+ * @returns {string | undefined}
+ */
+export function grokModelAtTime(events, ts) {
+  if (!events?.length) return undefined;
+  const dated = events.filter((e) => e.t != null && e.model);
+  if (!dated.length) return undefined;
+  const uniq = new Set(dated.map((e) => e.model));
+  if (uniq.size === 1) return dated[0].model;
+
+  const t = parseTs(ts)?.getTime();
+  if (t == null) return undefined;
+
+  let best;
+  let bestDt = Infinity;
+  for (const e of dated) {
+    const dt = /** @type {number} */ (e.t) - t;
+    if (dt >= 0 && dt < bestDt) {
+      bestDt = dt;
+      best = e.model;
+    }
+  }
+  return best;
+}
+
+/**
  * @param {UsageAgg | null | undefined} u
  */
 function usageScore(u) {
@@ -97,12 +306,13 @@ function usageScore(u) {
 /**
  * Aggregate turn usage from unified.jsonl by sid (per-loop inference_done).
  * 注意：该日志会被轮转/截断，长会话往往只剩近期片段，不能无脑优先于 updates.jsonl。
- * @param {{ add?: Function, onlySids?: Set<string> }} [opts]
+ * @param {{ add?: Function, onlySids?: Set<string>, modelTimelines?: Map<string, any[]> }} [opts]
  * @returns {Promise<Map<string, UsageAgg>>}
  */
 async function loadUnifiedUsage(opts = {}) {
   const hourly = opts.hourly;
   const onlySids = opts.onlySids;
+  const modelTimelines = opts.modelTimelines;
   const logPath = agentPaths().grokUnifiedLog;
   /** @type {Map<string, UsageAgg>} */
   const map = new Map();
@@ -150,11 +360,14 @@ async function loadUnifiedUsage(opts = {}) {
     map.set(sid, cur);
     if (hourly?.add && obj.ts) {
       const modelHint =
-        ctx.model ||
-        ctx.model_id ||
-        obj.model ||
-        obj.model_id ||
-        undefined;
+        normalizeGrokModel(
+          ctx.model ||
+            ctx.model_id ||
+            obj.model ||
+            obj.model_id ||
+            undefined
+        ) ||
+        grokModelAtTime(modelTimelines?.get(sid) || [], obj.ts);
       hourly.add(id, obj.ts, {
         inputTokens: part.input,
         outputTokens: part.output,
@@ -168,92 +381,6 @@ async function loadUnifiedUsage(opts = {}) {
     }
   }
   return map;
-}
-
-/**
- * 会话级 turn_completed.usage（通常比 unified 日志更完整，因不受全局 log 轮转影响）。
- * @param {string} sessionDir
- * @param {{ add?: Function }} [hourly]
- * @param {string} [sessionId]
- * @returns {Promise<UsageAgg | null>}
- */
-async function loadUpdatesUsage(sessionDir, hourly, sessionId) {
-  const updatesPath = path.join(sessionDir, "updates.jsonl");
-  if (!fs.existsSync(updatesPath)) return null;
-
-  const stream = fs.createReadStream(updatesPath, { encoding: "utf8" });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-  /** @type {UsageAgg} */
-  const cur = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    reasoning: 0,
-    turns: 0,
-    requests: 0,
-  };
-  let found = false;
-
-  for await (const line of rl) {
-    // Fast path: only touch lines that can carry usage
-    if (!line.includes("turn_completed") || !line.includes("usage")) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const update = obj.params?.update;
-    if (!update || update.sessionUpdate !== "turn_completed") continue;
-    const us = update.usage;
-    if (!us || typeof us !== "object") continue;
-
-    found = true;
-    // updates.jsonl 与 unified 相同：input 含 cache，output 常含 reasoning
-    const part = splitGrokUsage({
-      prompt: us.inputTokens,
-      cached: us.cachedReadTokens,
-      completion: us.outputTokens,
-      reasoning: us.reasoningTokens,
-    });
-    const modelCalls = Math.max(1, Number(us.modelCalls) || 1);
-    cur.input += part.input;
-    cur.output += part.output;
-    cur.cacheRead += part.cacheRead;
-    cur.reasoning += part.reasoning;
-    cur.turns += 1;
-    cur.requests += modelCalls;
-    // turn 时间：优先 update 内字段，否则整行时间
-    if (hourly?.add) {
-      const ts =
-        update.timestamp ||
-        obj.timestamp ||
-        obj.ts ||
-        us.timestamp ||
-        null;
-      if (ts) {
-        let modelHint;
-        if (us.modelUsage && typeof us.modelUsage === "object") {
-          const keys = Object.keys(us.modelUsage);
-          if (keys.length) modelHint = keys[keys.length - 1];
-        }
-        hourly.add(id, ts, {
-          inputTokens: part.input,
-          outputTokens: part.output,
-          cacheReadTokens: part.cacheRead,
-          reasoningTokens: part.reasoning,
-          model: modelHint,
-          sessionId: sessionId || undefined,
-          requestCount: modelCalls,
-        });
-      }
-    }
-    // 不使用 costUsdTicks（量级偏高且不等于可核对 API 账单）
-  }
-
-  if (!found) return null;
-  return cur;
 }
 
 /**
@@ -377,6 +504,8 @@ export async function scan(ctx = {}) {
   const preferUpdates = new Set();
   /** @type {Map<string, string>} sessionId → sessionDir（updates 回填 hourly 用） */
   const dirBySid = new Map();
+  /** @type {Map<string, Awaited<ReturnType<typeof loadGrokTurnEvents>>["events"]>} */
+  const eventsBySid = new Map();
 
   for (const dir of sessionDirs) {
     const summaryPath = path.join(dir, "summary.json");
@@ -399,7 +528,9 @@ export async function scan(ctx = {}) {
      */
     let fromUpdates = null;
     try {
-      fromUpdates = await loadUpdatesUsage(dir, null, sessionId);
+      const loaded = await loadGrokTurnEvents(dir);
+      fromUpdates = loaded.agg;
+      if (loaded.events.length) eventsBySid.set(sessionId, loaded.events);
     } catch (err) {
       console.error("[grok] updates fallback failed", sessionId, err);
     }
@@ -503,25 +634,41 @@ export async function scan(ctx = {}) {
   // 小时桶：每个 sid 只写入选定的那一侧，避免 unified+updates 双计
   if (hourly?.add) {
     if (preferUnified.size > 0) {
-      await loadUnifiedUsage({ hourly, onlySids: preferUnified });
+      await loadUnifiedUsage({
+        hourly,
+        onlySids: preferUnified,
+        modelTimelines: eventsBySid,
+      });
     }
     for (const sid of preferUpdates) {
-      const d = dirBySid.get(sid);
-      if (!d) continue;
-      try {
-        await loadUpdatesUsage(d, hourly, sid);
-      } catch (err) {
-        console.error("[grok] updates hourly failed", sid, err);
+      const evs = eventsBySid.get(sid);
+      if (!evs?.length) continue;
+      for (const ev of evs) {
+        if (!ev.ts) continue;
+        hourly.add(id, ev.ts, {
+          inputTokens: ev.input,
+          outputTokens: ev.output,
+          cacheReadTokens: ev.cacheRead,
+          reasoningTokens: ev.reasoning,
+          model: ev.model,
+          sessionId: sid,
+          requestCount: ev.requests,
+        });
       }
     }
   }
 
-  // 会话级 model 保底：回填 turn 日志里没有模型字段的小时桶
+  // 会话级 model 保底：只在「整段只有一种模型 / turn 完全没写模型」时回填。
+  // 混用过 grok-4.5 再切 4.6 时，绝不能用 current_model_id 把历史全盖掉。
   if (hourly?.resolveSessionModels) {
     /** @type {Map<string, string>} */
     const sessionModels = new Map();
     for (const rec of byId.values()) {
-      if (rec.model) sessionModels.set(`${id}:${rec.sessionId}`, rec.model);
+      const evs = eventsBySid.get(rec.sessionId) || [];
+      const seen = new Set(evs.map((e) => e.model).filter(Boolean));
+      if (seen.size > 1) continue;
+      const only = seen.size === 1 ? [...seen][0] : rec.model;
+      if (only) sessionModels.set(`${id}:${rec.sessionId}`, only);
     }
     hourly.resolveSessionModels(sessionModels);
   }
