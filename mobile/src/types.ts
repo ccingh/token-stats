@@ -30,6 +30,8 @@ export interface SessionRecord {
   turnCount?: number;
   /** 模型/API 请求次数（区间视图下可能来自 hourly.events） */
   requestCount?: number;
+  /** 命中长上下文档的请求数 */
+  longContextRequests?: number;
   mergedChildren?: string[];
   childCount?: number;
   deleted?: boolean;

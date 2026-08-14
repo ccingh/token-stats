@@ -9,6 +9,11 @@ import {
   modelAggKey,
   normalizeModelName,
 } from "./types.js";
+import {
+  estimateCost,
+  isLongContextPrompt,
+  promptTokensOf,
+} from "./pricing.js";
 
 const UNKNOWN = "未知模型";
 
@@ -101,6 +106,15 @@ export function preferSessionModel(turnModel, sessionModel) {
  * @returns {{
  *   add: (client: string, ts: any, parts: object) => void,
  *   resolveSessionModels: (sessionModels: Map<string, string> | Record<string, string>) => void,
+ *   getSessionCosts: () => Map<string, {
+ *     usd: number,
+ *     cny: number,
+ *     requests: number,
+ *     longContextRequests: number,
+ *     tokens: number,
+ *     hasUsd: boolean,
+ *     hasCny: boolean,
+ *   }>,
  *   toArray: () => import('./types.js').HourlyBucket[],
  * }}
  */
@@ -117,8 +131,22 @@ export function createHourlyMap() {
    *   reasoningTokens: number,
    *   totalTokens: number,
    *   events: number,
+   *   costUsd?: number,
+   *   costCny?: number,
+   *   longContextEvents?: number,
    * }>} */
   const map = new Map();
+
+  /** @type {Map<string, {
+   *   usd: number,
+   *   cny: number,
+   *   requests: number,
+   *   longContextRequests: number,
+   *   tokens: number,
+   *   hasUsd: boolean,
+   *   hasCny: boolean,
+   * }>} */
+  const sessionCosts = new Map();
 
   /**
    * turn 无 model、但有 sessionId：等会话扫完再落桶
@@ -139,8 +167,75 @@ export function createHourlyMap() {
    *   model?: string,
    *   sessionId?: string,
    *   requestCount?: number  本批模型请求次数，默认 1（Grok turn 可传 modelCalls）
+   *   singleRequest?: boolean  明确是/不是单次请求（会话兜底写入必须 false）
    * }} parts
    */
+  function emptyBucket(hour, client, model, sid) {
+    return {
+      hour,
+      client,
+      model,
+      sessionId: sid || undefined,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+      events: 0,
+      costUsd: undefined,
+      costCny: undefined,
+      longContextEvents: 0,
+    };
+  }
+
+  function addSessionCost(client, sid, priced, reqs, lc, tokens) {
+    if (!sid) return;
+    const k = `${client}:${sid}`;
+    const cur = sessionCosts.get(k) || {
+      usd: 0,
+      cny: 0,
+      requests: 0,
+      longContextRequests: 0,
+      tokens: 0,
+      hasUsd: false,
+      hasCny: false,
+    };
+    if (priced.usd != null) {
+      cur.usd += priced.usd;
+      cur.hasUsd = true;
+    }
+    if (priced.cny != null) {
+      cur.cny += priced.cny;
+      cur.hasCny = true;
+    }
+    cur.requests += reqs;
+    cur.longContextRequests += lc;
+    cur.tokens += tokens;
+    sessionCosts.set(k, cur);
+  }
+
+  function priceChunk(model, parts, reqs, single) {
+    if (!model || model === UNKNOWN) {
+      return { usd: null, cny: null, lc: 0 };
+    }
+    const s = {
+      model,
+      inputTokens: Number(parts.inputTokens) || 0,
+      outputTokens: Number(parts.outputTokens) || 0,
+      cacheReadTokens: Number(parts.cacheReadTokens) || 0,
+      cacheWriteTokens: Number(parts.cacheWriteTokens) || 0,
+      reasoningTokens: Number(parts.reasoningTokens) || 0,
+      promptTokens: parts.promptTokens,
+      requestCount: reqs,
+      singleRequest: single,
+    };
+    const est = estimateCost(s);
+    const prompt = promptTokensOf(s);
+    const lc = single && isLongContextPrompt(model, prompt) ? reqs : 0;
+    return { usd: est.usd, cny: est.cny, lc };
+  }
+
   function commit(client, ts, parts) {
     const hour = hourKeyFromTs(ts);
     if (!hour || !client) return;
@@ -153,19 +248,7 @@ export function createHourlyMap() {
     const key = `${client}|${hour}|${model}|${sid}`;
     let cur = map.get(key);
     if (!cur) {
-      cur = {
-        hour,
-        client,
-        model,
-        sessionId: sid || undefined,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 0,
-        events: 0,
-      };
+      cur = emptyBucket(hour, client, model, sid);
       map.set(key, cur);
     }
     const input = Number(parts.inputTokens) || 0;
@@ -178,19 +261,31 @@ export function createHourlyMap() {
     cur.cacheReadTokens += cacheRead;
     cur.cacheWriteTokens += cacheWrite;
     cur.reasoningTokens += reasoning;
+    let addedTokens;
     if (parts.totalTokens != null && Number.isFinite(Number(parts.totalTokens))) {
-      cur.totalTokens += Number(parts.totalTokens);
+      addedTokens = Number(parts.totalTokens);
+      cur.totalTokens += addedTokens;
     } else {
-      cur.totalTokens += computeTotalTokens({
+      addedTokens = computeTotalTokens({
         inputTokens: input,
         outputTokens: output,
         cacheReadTokens: cacheRead,
         cacheWriteTokens: cacheWrite,
         reasoningTokens: reasoning,
       });
+      cur.totalTokens += addedTokens;
     }
-    const reqs = Number(parts.requestCount);
-    cur.events += Number.isFinite(reqs) && reqs > 0 ? reqs : 1;
+    const rawReqs = Number(parts.requestCount);
+    const reqs = Number.isFinite(rawReqs) && rawReqs > 0 ? rawReqs : 1;
+    cur.events += reqs;
+    const single =
+      parts.singleRequest === true ||
+      (parts.singleRequest !== false && reqs === 1);
+    const priced = priceChunk(model, parts, reqs, single);
+    if (priced.usd != null) cur.costUsd = (cur.costUsd || 0) + priced.usd;
+    if (priced.cny != null) cur.costCny = (cur.costCny || 0) + priced.cny;
+    if (priced.lc) cur.longContextEvents = (cur.longContextEvents || 0) + priced.lc;
+    addSessionCost(client, sid, priced, reqs, priced.lc, addedTokens);
   }
 
   /**
@@ -221,19 +316,7 @@ export function createHourlyMap() {
       const key = `${e.client}|${e.hour}|${model}|${sid}`;
       let cur = map.get(key);
       if (!cur) {
-        cur = {
-          hour: e.hour,
-          client: e.client,
-          model,
-          sessionId: sid || undefined,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          reasoningTokens: 0,
-          totalTokens: 0,
-          events: 0,
-        };
+        cur = emptyBucket(e.hour, e.client, model, sid);
         map.set(key, cur);
       }
       cur.inputTokens += e.inputTokens || 0;
@@ -243,6 +326,39 @@ export function createHourlyMap() {
       cur.reasoningTokens += e.reasoningTokens || 0;
       cur.totalTokens += e.totalTokens || 0;
       cur.events += e.events || 0;
+
+      let usd = e.costUsd;
+      let cny = e.costCny;
+      let lc = e.longContextEvents || 0;
+      // 原先当未知落桶、现在补上模型：按这一块重估（events=1 才能选长档）
+      if (e.model === UNKNOWN && model !== UNKNOWN) {
+        const priced = priceChunk(
+          model,
+          {
+            inputTokens: e.inputTokens,
+            outputTokens: e.outputTokens,
+            cacheReadTokens: e.cacheReadTokens,
+            cacheWriteTokens: e.cacheWriteTokens,
+            reasoningTokens: e.reasoningTokens,
+          },
+          e.events || 1,
+          (e.events || 1) === 1
+        );
+        usd = priced.usd;
+        cny = priced.cny;
+        lc = priced.lc;
+        addSessionCost(
+          e.client,
+          sid,
+          priced,
+          e.events || 1,
+          priced.lc,
+          e.totalTokens || 0
+        );
+      }
+      if (usd != null) cur.costUsd = (cur.costUsd || 0) + usd;
+      if (cny != null) cur.costCny = (cur.costCny || 0) + cny;
+      if (lc) cur.longContextEvents = (cur.longContextEvents || 0) + lc;
     }
   }
 
@@ -304,6 +420,10 @@ export function createHourlyMap() {
 
       // 仅把 model=未知 的已落桶条目用会话级补全（不覆盖裸 id / · high / · max）
       remapCommittedBySessionModel(get);
+    },
+
+    getSessionCosts() {
+      return sessionCosts;
     },
 
     toArray() {

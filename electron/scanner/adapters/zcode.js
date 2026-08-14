@@ -333,6 +333,7 @@ export function scan(ctx = {}) {
             cacheWriteTokens: u.cacheWrite,
             model: u.model,
             sessionId: sid,
+            singleRequest: false,
           });
         }
       }

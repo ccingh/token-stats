@@ -1,15 +1,18 @@
+import { modelAggKey } from "./types.js";
+
 /**
  * 模型价目表（USD / 1M tokens + 可选官方 CNY）。
  *
  * - 匹配规则：模型名（小写）包含 key 即命中，key 越长越优先
+ * - `-free` / `_free` 后缀（OpenCode Zen 等免费档）固定 $0，不套付费兄弟价，也不进「未定价」
+ * - 用户覆盖里写了同名规则时，仍以用户价为准
  * - 未配置 cacheRead / cacheWrite 时按惯例：cacheRead = input * 0.1，cacheWrite = input * 1.25
  * - reasoning token 按 output 单价计
  * - cny：仅填「厂商官方人民币刊例」。有 cny 时前端显示 ¥ 直接用人民币价，不走「美元×汇率」
  * - 无官方 CNY 的厂商（Anthropic / OpenAI / xAI 等）不硬造人民币价
- * - 分段计费（tiers/cnyTiers）：价目表里保留官方多档刊例，但会话级估算
- *   **固定用基础档（第一档 / flat 字段）**。原因：只有「每次请求的输入长度」
- *   才能正确选档；用会话均长去套整段 token 会把早期短请求也按高档计，系统性高估。
- *   真正的逐请求分段需 turn 级明细后再做。
+ * - 分段计费（tiers/cnyTiers）：有单次请求 prompt 长度时按档选价
+ *   （Grok 4.5/4.6：prompt ≥200k 整单走长档）。会话汇总（多请求加总）
+ *   仍用基础档，避免均长把早期短请求也套进高档。
  * - 缓存：若 cacheRead ≤ input，默认 input 含缓存子集，计费用 (input-cache)*input价 + cache*缓存价
  *
  * 价格核对日期：2026-08-13（公开文档，会随厂商调价过期）
@@ -399,7 +402,22 @@ const PRICES = {
 };
 
 // key 越长越优先（避免 "gpt-5" 抢先命中 "gpt-5-mini"，"glm-5" 抢 "glm-5.2"）
-const KEYS = Object.keys(PRICES).sort((a, b) => b.length - a.length);
+/** @type {Record<string, ModelPrice>} */
+let extraPrices = {};
+/** @type {Record<string, string>} */
+let extraAliases = {};
+
+function mergedPrices() {
+  return { ...PRICES, ...extraPrices };
+}
+
+function mergedAliases() {
+  return { ...MODEL_ALIASES, ...extraAliases };
+}
+
+function mergedKeys() {
+  return Object.keys(mergedPrices()).sort((a, b) => b.length - a.length);
+}
 
 /**
  * OpenCode / 供应商短 id → 价目表 key（contains 匹配用）
@@ -418,33 +436,155 @@ const MODEL_ALIASES = {
 };
 
 /**
+ * 装入用户覆盖（models 整份替换同名内置价，aliases 同名覆盖）。
+ * @param {{ models?: Record<string, ModelPrice>, aliases?: Record<string, string> } | null | undefined} overrides
+ */
+export function applyPriceOverrides(overrides) {
+  extraPrices = {};
+  extraAliases = {};
+  if (!overrides) return;
+  const models = overrides.models || {};
+  for (const [k, v] of Object.entries(models)) {
+    if (v && typeof v === "object") extraPrices[k] = v;
+  }
+  const aliases = overrides.aliases || {};
+  for (const [k, v] of Object.entries(aliases)) {
+    if (k && v) extraAliases[k] = String(v);
+  }
+}
+
+/** @returns {Record<string, ModelPrice>} */
+export function getBuiltinPrices() {
+  return { ...PRICES };
+}
+
+/** @returns {Set<string>} */
+export function getBuiltinKeys() {
+  return new Set(Object.keys(PRICES));
+}
+
+/**
+ * @returns {Array<{
+ *   key: string,
+ *   source: 'builtin' | 'user' | 'override',
+ *   price: ModelPrice,
+ *   builtinPrice: ModelPrice | null,
+ *   aliases: string[],
+ * }>}
+ */
+export function getPricingCatalog() {
+  const book = mergedPrices();
+  const aliasMap = mergedAliases();
+  /** @type {Record<string, string[]>} */
+  const aliasByTarget = {};
+  for (const [from, to] of Object.entries(aliasMap)) {
+    if (!aliasByTarget[to]) aliasByTarget[to] = [];
+    aliasByTarget[to].push(from);
+  }
+  return Object.keys(book)
+    .sort((a, b) => a.localeCompare(b))
+    .map((key) => ({
+      key,
+      source: extraPrices[key] ? (PRICES[key] ? "override" : "user") : "builtin",
+      price: book[key],
+      builtinPrice: PRICES[key] || null,
+      aliases: aliasByTarget[key] || [],
+    }));
+}
+
+const UNKNOWN_MODEL_RE =
+  /^(未知模型|（未知模型）|\(未知模型\)|（未知）|未知|\(unknown\)|unknown|<synthetic>|synthetic|<unknown>)$/i;
+
+/** OpenCode Zen 等：id 以 -free / _free / /free 结尾，或整段就是 free */
+const FREE_TIER_RE = /(?:^|[/\-_\s.])free$/i;
+
+/** 免费档刊例：用量仍统计，花费记 0，避免去套付费兄弟价 */
+const ZERO_PRICE = Object.freeze({
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cny: Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+});
+
+/**
+ * 是否为厂商免费档 id（minimax-m3-free、mimo-v2.5-free）。
+ * 不误伤 freebsd / freeform。
+ * @param {string} [model]
+ */
+export function isFreeTierModel(model) {
+  if (!model) return false;
+  let m = String(model).toLowerCase().trim();
+  m = m.replace(/\s*·\s*.+$/, "").trim();
+  if (!m) return false;
+  if (m.includes("/")) m = m.split("/").pop() || m;
+  return FREE_TIER_RE.test(m);
+}
+
+/**
+ * 扫描结果里查不到价的模型（已去档位后缀）。
+ * @param {Array<{ model?: string, totalTokens?: number }>} sessions
+ * @returns {Array<{ model: string, sessions: number, totalTokens: number }>}
+ */
+export function collectUnpricedModels(sessions) {
+  /** @type {Map<string, { model: string, sessions: number, totalTokens: number }>} */
+  const map = new Map();
+  for (const s of sessions || []) {
+    const key = modelAggKey(s.model) || (s.model ? String(s.model).trim() : "");
+    if (!key || UNKNOWN_MODEL_RE.test(key)) continue;
+    if (findPrice(key)) continue;
+    const cur = map.get(key) || { model: key, sessions: 0, totalTokens: 0 };
+    cur.sessions += 1;
+    cur.totalTokens += Number(s.totalTokens) || 0;
+    map.set(key, cur);
+  }
+  return [...map.values()].sort(
+    (a, b) => b.totalTokens - a.totalTokens || a.model.localeCompare(b.model)
+  );
+}
+
+/**
  * @param {string} [model]
  * @returns {ModelPrice | null}
  */
 export function findPrice(model) {
   if (!model) return null;
-  let m = String(model).toLowerCase().trim();
+  const book = mergedPrices();
+  const aliasMap = mergedAliases();
+  const keys = mergedKeys();
+  const agg = modelAggKey(model);
+  let m = String(agg || model).toLowerCase().trim();
   // 展示名带档位：deepseek-v4-pro · max → 先按主名匹配
   m = m.replace(/\s*·\s*.+$/, "").trim();
-  if (MODEL_ALIASES[m]) m = MODEL_ALIASES[m];
+  if (aliasMap[m]) m = aliasMap[m];
   // provider/id 或 id 末段
   if (m.includes("/")) {
     const tail = m.split("/").pop() || m;
-    if (MODEL_ALIASES[tail]) m = MODEL_ALIASES[tail];
+    if (aliasMap[tail]) m = aliasMap[tail];
   }
-  for (const key of KEYS) {
-    if (m.includes(key)) return PRICES[key];
+  // 精确命中优先：用户给 minimax-m3-free 补过价时走用户规则
+  if (book[m]) return book[m];
+  if (m.includes("/")) {
+    const tail = m.split("/").pop() || m;
+    if (book[tail]) return book[tail];
+  }
+  // 免费档：$0。必须在 contains 之前，否则 deepseek-v4-flash-free 会套官方 flash 价
+  if (isFreeTierModel(m)) return ZERO_PRICE;
+  for (const key of keys) {
+    if (m.includes(key)) return book[key];
   }
   // 原始串再试一次（兼容未剥离的形态）
   const raw = String(model).toLowerCase();
-  for (const key of KEYS) {
-    if (raw.includes(key)) return PRICES[key];
+  if (isFreeTierModel(raw)) return ZERO_PRICE;
+  for (const key of keys) {
+    if (raw.includes(key)) return book[key];
   }
   return null;
 }
 
 /**
  * 按输入长度选阶梯档（仅在有「单次请求 prompt 长度」时使用）。
+ * 档界是「小于 upTo」：Grok 官方 ≥200k 走长档 → 第一档 upTo=200000。
  * @param {PriceTier[] | undefined} tiers
  * @param {number} promptTokens
  * @returns {Price | null}
@@ -472,8 +612,60 @@ export function pickTier(tiers, promptTokens) {
 }
 
 /**
- * 按价目表估算一个会话的成本。模型未知时两个币种都为 null。
- * 会话级固定用基础档（p / p.cny），不用均长套高档，避免系统性高估。
+ * 本次请求的 prompt 长度（选档用）。
+ * cache 仍含在 input 内 → prompt = input；
+ * 已拆成互不重叠（Grok）→ prompt = 未命中 + 缓存。
+ * @param {{
+ *   promptTokens?: number,
+ *   inputTokens?: number,
+ *   cacheReadTokens?: number,
+ * }} s
+ */
+export function promptTokensOf(s) {
+  if (s?.promptTokens != null && Number.isFinite(Number(s.promptTokens))) {
+    return Math.max(0, Number(s.promptTokens));
+  }
+  const input = Number(s?.inputTokens) || 0;
+  const cacheRead = Number(s?.cacheReadTokens) || 0;
+  // Grok 4.5/4.6：adapter 已把 cache 从 prompt 拆出，prompt = 未命中 + 缓存
+  // （cache ≤ input 时不能当成「input 已含 cache」，否则 120k+100k 会漏掉长档）
+  if (isGrokContextTier(s?.model)) return input + cacheRead;
+  if (cacheRead > 0 && cacheRead <= input) return input;
+  return input + cacheRead;
+}
+
+function isGrokContextTier(model) {
+  const p = findPrice(model);
+  return !!(p?.tiers?.length && Number(p.tiers[0].upTo) === 200000);
+}
+
+/**
+ * 是否按「单次请求」选档。多请求汇总必须为 false，否则会话总量会误套长档。
+ * @param {{ singleRequest?: boolean, requestCount?: number, events?: number }} s
+ */
+export function usesRequestTiers(s) {
+  if (!s) return false;
+  if (s.singleRequest === false) return false;
+  if (s.singleRequest === true) return true;
+  return Number(s.requestCount) === 1 || Number(s.events) === 1;
+}
+
+/**
+ * 该 prompt 是否命中价目第一档以上（Grok 即 ≥200k）。
+ * @param {string} [model]
+ * @param {number} promptTokens
+ */
+export function isLongContextPrompt(model, promptTokens) {
+  const p = findPrice(model);
+  if (!p?.tiers?.length) return false;
+  const firstUp = Number(p.tiers[0].upTo);
+  if (!Number.isFinite(firstUp)) return false;
+  return Number(promptTokens) >= firstUp;
+}
+
+/**
+ * 按价目表估算成本。模型未知时两个币种都为 null。
+ * 单次请求且模型有 tiers 时按 prompt 选档；否则用基础档。
  * usd 按美元价目；cny 仅当配置了官方人民币价时直接算，否则 null（上层按汇率折算）。
  * @param {{
  *   model?: string,
@@ -483,6 +675,10 @@ export function pickTier(tiers, promptTokens) {
  *   cacheWriteTokens: number,
  *   reasoningTokens: number,
  *   messageCount?: number,
+ *   requestCount?: number,
+ *   events?: number,
+ *   singleRequest?: boolean,
+ *   promptTokens?: number,
  * }} s
  * @returns {{ usd: number | null, cny: number | null }}
  */
@@ -490,9 +686,23 @@ export function estimateCost(s) {
   const p = findPrice(s.model);
   if (!p) return { usd: null, cny: null };
 
-  // 基础档 = flat 字段（与 tiers[0] 对齐）；会话汇总无法做正确分段
-  const usdPrice = { input: p.input, output: p.output, cacheRead: p.cacheRead, cacheWrite: p.cacheWrite };
-  const cnyPrice = p.cny || null;
+  const useTiers = usesRequestTiers(s);
+  const prompt = promptTokensOf(s);
+
+  const usdPrice =
+    useTiers && p.tiers?.length
+      ? pickTier(p.tiers, prompt) || {
+          input: p.input,
+          output: p.output,
+          cacheRead: p.cacheRead,
+          cacheWrite: p.cacheWrite,
+        }
+      : { input: p.input, output: p.output, cacheRead: p.cacheRead, cacheWrite: p.cacheWrite };
+
+  let cnyPrice = p.cny || null;
+  if (useTiers && p.cnyTiers?.length) {
+    cnyPrice = pickTier(p.cnyTiers, prompt);
+  }
 
   return {
     usd: calc(s, usdPrice),
@@ -514,11 +724,10 @@ function calc(s, p) {
   const output = Number(s.outputTokens) || 0;
   const reasoning = Number(s.reasoningTokens) || 0;
 
-  // Grok/OpenAI 风格：若 adapter 仍把 cache 算进 input（cache ≤ input）→ 只对未命中部分按 input 价
-  // Claude 风格：input 与 cache 分列（常 cache ≫ input）→ 不扣减
-  // Grok adapter 现已拆成未重叠字段，此时 cache > input，走「不扣减」分支即可
+  // 多数 adapter：cache 仍含在 input 内（cache ≤ input）→ 未命中 = input - cache
+  // Grok 4.5/4.6 已拆成互不重叠：即使 cache ≤ 未命中也不能再减
   let billableInput = input;
-  if (cacheRead > 0 && cacheRead <= input) {
+  if (cacheRead > 0 && cacheRead <= input && !isGrokContextTier(s.model)) {
     billableInput = input - cacheRead;
   }
 

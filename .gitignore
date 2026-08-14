@@ -29,6 +29,7 @@ mobile/**/build/
 *.keystore
 
 # local / editor
+AGENTS.md
 scripts/_probe-*.mjs
 .idea/
 .vscode/

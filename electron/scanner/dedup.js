@@ -19,7 +19,7 @@
  * 排序依据：数据更完整的源优先。opencode/pi 会话自带成本；claude 是主力工具。
  * 调整顺序只改这里。
  */
-const CLIENT_PRIORITY = ["opencode", "claude", "zcode", "grok", "kimi", "pi"];
+const CLIENT_PRIORITY = ["opencode", "claude", "codex", "zcode", "grok", "kimi", "pi"];
 
 /**
  * @typedef {{

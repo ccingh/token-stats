@@ -7,6 +7,8 @@ import readline from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { agentPaths } from "./paths.js";
 import { toIso } from "./types.js";
+import * as codex from "./adapters/codex.js";
+import * as dsh from "./adapters/dsh.js";
 
 const MAX_MESSAGES = 800;
 const MAX_PART_CHARS = 48_000;
@@ -1259,6 +1261,234 @@ async function piTranscript(sessionId) {
 }
 
 /**
+ * @param {string} sessionId
+ */
+function codexTranscript(sessionId) {
+  const file = codex.findRolloutPath(sessionId);
+  if (!file) return null;
+
+  let raw;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+
+  /** @type {any[]} */
+  const messages = [];
+  let title;
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!o || typeof o !== "object") continue;
+    const ts = toIso(o.timestamp);
+    const type = o.type;
+    const p = o.payload && typeof o.payload === "object" ? o.payload : {};
+
+    if (type === "session_meta" && !title) {
+      title = p.title || undefined;
+    }
+
+    if (type === "event_msg" && p.type === "user_message") {
+      const text = String(p.message || "").trim();
+      if (!text) continue;
+      if (!title) {
+        title = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      }
+      messages.push(
+        msg({
+          index: messages.length + 1,
+          role: "user",
+          ts,
+          parts: [part({ type: "text", text, collapsedByDefault: false })],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+
+    if (type === "event_msg" && p.type === "agent_message") {
+      const text = String(p.message || "").trim();
+      if (!text) continue;
+      messages.push(
+        msg({
+          index: messages.length + 1,
+          role: "assistant",
+          ts,
+          parts: [part({ type: "text", text, collapsedByDefault: false })],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+
+    if (type !== "response_item") continue;
+
+    if (p.type === "reasoning") {
+      const summary = Array.isArray(p.summary)
+        ? p.summary.map((x) => x?.text || "").filter(Boolean).join("\n")
+        : "";
+      const body = Array.isArray(p.content)
+        ? p.content
+            .map((x) => x?.text || x?.content || "")
+            .filter(Boolean)
+            .join("\n")
+        : contentToString(p.content);
+      const text = summary || body;
+      if (!text) continue;
+      messages.push(
+        msg({
+          id: p.id,
+          index: messages.length + 1,
+          role: "reasoning",
+          ts,
+          parts: [
+            part({ type: "thinking", text, collapsedByDefault: true }),
+          ],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+
+    if (p.type === "function_call" || p.type === "custom_tool_call") {
+      let args = p.arguments ?? p.input;
+      if (typeof args === "string") {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          /* keep */
+        }
+      }
+      messages.push(
+        msg({
+          id: p.id || p.call_id,
+          index: messages.length + 1,
+          role: "tool",
+          ts,
+          parts: [
+            part({
+              type: "tool_call",
+              toolName: String(p.name || "tool"),
+              toolId: p.call_id || p.id,
+              input:
+                args != null
+                  ? typeof args === "string"
+                    ? args
+                    : safeJson(args)
+                  : undefined,
+              collapsedByDefault: true,
+            }),
+          ],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+
+    if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+      messages.push(
+        msg({
+          id: p.id || p.call_id,
+          index: messages.length + 1,
+          role: "tool",
+          ts,
+          parts: [
+            part({
+              type: "tool_result",
+              toolId: p.call_id || p.id,
+              output: contentToString(p.output),
+              collapsedByDefault: true,
+            }),
+          ],
+          sourceSessionId: sessionId,
+        })
+      );
+    }
+  }
+
+  return finalize(messages, {
+    client: "codex",
+    sessionId,
+    title,
+    note: messages.length ? undefined : "Codex 会话文件中未解析到对话正文。",
+  });
+}
+
+/**
+ * @param {string} sessionId
+ */
+function dshTranscript(sessionId) {
+  const parsed = dsh.getTranscript(sessionId);
+  if (!parsed) return null;
+  /** @type {any[]} */
+  const messages = [];
+  for (const row of parsed.messages || []) {
+    if (row.role === "user") {
+      const text = (row.text || "").trim();
+      if (!text) continue;
+      messages.push(
+        msg({
+          role: "user",
+          index: messages.length + 1,
+          ts: row.ts,
+          parts: [part({ type: "text", text })],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+    if (row.role === "assistant") {
+      const text = (row.text || "").trim();
+      if (!text) continue;
+      messages.push(
+        msg({
+          role: "assistant",
+          index: messages.length + 1,
+          ts: row.ts,
+          model: row.model,
+          parts: [part({ type: "text", text })],
+          sourceSessionId: sessionId,
+        })
+      );
+      continue;
+    }
+    if (row.role === "tool") {
+      messages.push(
+        msg({
+          role: "tool",
+          index: messages.length + 1,
+          ts: row.ts,
+          parts: [
+            part({
+              type: "tool_call",
+              toolName: row.toolName,
+              toolId: row.toolId,
+              input: row.toolInput,
+              output: row.toolOutput,
+              collapsedByDefault: true,
+            }),
+          ],
+          sourceSessionId: sessionId,
+        })
+      );
+    }
+  }
+  return finalize(messages, {
+    client: "dsh",
+    sessionId,
+    title: parsed.title,
+    note: messages.length ? undefined : "dsh 会话文件中未解析到对话正文。",
+  });
+}
+
+/**
  * @param {{ client: string, sessionId: string, mergedChildren?: string[] }} opts
  */
 export async function getSessionTranscript(opts) {
@@ -1301,6 +1531,12 @@ export async function getSessionTranscript(opts) {
       break;
     case "pi":
       result = await piTranscript(sessionId);
+      break;
+    case "codex":
+      result = codexTranscript(sessionId);
+      break;
+    case "dsh":
+      result = dshTranscript(sessionId);
       break;
     default:
       return {
@@ -1349,6 +1585,10 @@ export async function getSessionTranscript(opts) {
           child = await claudeTranscript(childId);
         } else if (client === "grok") {
           child = grokTranscript(childId);
+        } else if (client === "codex") {
+          child = codexTranscript(childId);
+        } else if (client === "dsh") {
+          child = dshTranscript(childId);
         }
       } catch {
         child = null;

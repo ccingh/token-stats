@@ -31,6 +31,8 @@ export interface SessionRecord {
   turnCount?: number;
   /** 模型/API 请求次数（区间视图下可能来自 hourly.events） */
   requestCount?: number;
+  /** 命中长上下文档的请求数（Grok prompt ≥200k 等） */
+  longContextRequests?: number;
   mergedChildren?: string[];
   childCount?: number;
   /** 源日志已不存在，来自本地持久化快照 */
@@ -210,10 +212,46 @@ export interface HourlyBucket {
   costUsd?: number;
   /** 有官方人民币刊例时的 CNY 成本 */
   costCny?: number;
+  /** 本桶内命中长上下文档的请求数 */
+  longContextEvents?: number;
 }
 
 /** 展示用量来源：时间窗可拆 / 会话全量（兼容）/ 无法拆分时的全量兜底 */
 export type UsageSource = "range" | "lifetime" | "lifetime-fallback";
+
+export interface UnpricedModel {
+  model: string;
+  sessions: number;
+  totalTokens: number;
+}
+
+export interface PriceFields {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface ModelPriceFields extends PriceFields {
+  cny?: PriceFields;
+}
+
+export interface PriceOverrides {
+  version: 1;
+  updatedAt?: string | null;
+  models: Record<string, ModelPriceFields>;
+  aliases: Record<string, string>;
+}
+
+export type PricingSource = "builtin" | "user" | "override";
+
+export interface PricingCatalogRow {
+  key: string;
+  source: PricingSource;
+  price: ModelPriceFields;
+  builtinPrice?: ModelPriceFields | null;
+  aliases: string[];
+}
 
 export interface ScanResult {
   scannedAt: string;
@@ -225,6 +263,10 @@ export interface ScanResult {
   sessions: SessionRecord[];
   /** 按推理/turn 时间的小时桶；趋势图优先用它 */
   hourly?: HourlyBucket[];
+  /** 当前价目表（含用户覆盖）仍查不到单价的模型 */
+  unpricedModels?: UnpricedModel[];
+  /** 用户覆盖文件损坏时的提示（扫描仍用内置价） */
+  pricingLoadError?: string;
   error?: string;
   storePath?: string;
   liveCount?: number;

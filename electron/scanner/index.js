@@ -6,7 +6,15 @@ import * as zcode from "./adapters/zcode.js";
 import * as pi from "./adapters/pi.js";
 import * as reasonix from "./adapters/reasonix.js";
 import * as mimocode from "./adapters/mimocode.js";
-import { estimateCost } from "./pricing.js";
+import * as codex from "./adapters/codex.js";
+import * as dsh from "./adapters/dsh.js";
+import {
+  applyPriceOverrides,
+  collectUnpricedModels,
+  estimateCost,
+  getBuiltinKeys,
+} from "./pricing.js";
+import { loadPriceOverrides } from "./pricing-overrides.js";
 import { mergeChildSessions } from "./types.js";
 import { dedupCrossClient } from "./dedup.js";
 import {
@@ -16,6 +24,46 @@ import {
   storePath,
 } from "./store.js";
 import { createHourlyMap } from "./hourly.js";
+
+/**
+ * 把父会话 + 已并入子会话的逐请求成本加起来。
+ * @param {import('./types.js').SessionRecord} s
+ * @param {Map<string, {
+ *   usd: number,
+ *   cny: number,
+ *   requests: number,
+ *   longContextRequests: number,
+ *   tokens: number,
+ *   hasUsd: boolean,
+ *   hasCny: boolean,
+ * }>} accMap
+ */
+function sumSessionAcc(s, accMap) {
+  if (!accMap || accMap.size === 0) return null;
+  const ids = [s.sessionId, ...(s.mergedChildren || [])];
+  let usd = 0;
+  let cny = 0;
+  let requests = 0;
+  let longContextRequests = 0;
+  let tokens = 0;
+  let hasUsd = false;
+  let hasCny = false;
+  let hit = false;
+  for (const id of ids) {
+    const c = accMap.get(`${s.client}:${id}`);
+    if (!c) continue;
+    hit = true;
+    usd += c.usd || 0;
+    cny += c.cny || 0;
+    requests += c.requests || 0;
+    longContextRequests += c.longContextRequests || 0;
+    tokens += c.tokens || 0;
+    if (c.hasUsd) hasUsd = true;
+    if (c.hasCny) hasCny = true;
+  }
+  if (!hit) return null;
+  return { usd, cny, requests, longContextRequests, tokens, hasUsd, hasCny };
+}
 
 /** @type {Array<{ id: string, displayName: string, detect: () => boolean, scan: (ctx?: any) => Promise<any[]> | any[] }>} */
 export const adapters = [
@@ -27,6 +75,8 @@ export const adapters = [
   pi,
   reasonix,
   mimocode,
+  codex,
+  dsh,
 ];
 
 /**
@@ -39,6 +89,11 @@ export async function scanAll(opts = {}) {
     : null;
   const persist = opts.persist !== false;
   const storeDir = opts.storeDir;
+
+  const loadedPrices = loadPriceOverrides(storeDir, {
+    builtinKeys: getBuiltinKeys(),
+  });
+  applyPriceOverrides(loadedPrices.overrides);
 
   const started = Date.now();
   /** @type {import('./types.js').SessionRecord[]} */
@@ -112,21 +167,69 @@ export async function scanAll(opts = {}) {
   //    标记而非删除——两条都保留，被排除条打 dedupExcluded，总额只算胜出条
   const { reports: dedupReports } = dedupCrossClient(merged);
 
-  // 并账/恢复后按当前 token 重算刊例价（有模型价时覆盖旧估值）
-  for (const s of merged) {
-    const est = estimateCost(s);
-    if (est.usd != null) s.costUsd = est.usd;
-    else if (s.costUsd == null) {
-      /* keep */
-    }
-    if (est.cny != null) s.costCny = est.cny;
-  }
-
   merged.sort((a, b) => {
     const ta = a.lastUsedAt || a.startedAt || "";
     const tb = b.lastUsedAt || b.startedAt || "";
     return tb.localeCompare(ta);
   });
+
+  // 全局再保底一次：任意适配器 pending 的 sessionId → 会话 model
+  if (typeof hourlyMap.resolveSessionModels === "function") {
+    /** @type {Map<string, string>} */
+    const sessionModels = new Map();
+    for (const s of liveSessions) {
+      if (s.model) sessionModels.set(`${s.client}:${s.sessionId}`, s.model);
+    }
+    // 并账后的父也可能带 model；用 merged 再补一轮
+    for (const s of merged) {
+      if (s.model) sessionModels.set(`${s.client}:${s.sessionId}`, s.model);
+    }
+    hourlyMap.resolveSessionModels(sessionModels);
+  }
+
+  // 先 resolve 小时桶模型，再按「每次请求」累计成本（Grok 长档等阶梯价）
+  const sessionCosts =
+    typeof hourlyMap.getSessionCosts === "function"
+      ? hourlyMap.getSessionCosts()
+      : new Map();
+  for (const s of merged) {
+    const acc = sumSessionAcc(s, sessionCosts);
+    const want = Number(s.requestCount) || 0;
+    const covered = acc && (want <= 0 || acc.requests + 0.5 >= want * 0.8);
+    if (acc && covered && (acc.hasUsd || acc.hasCny)) {
+      s.costUsd = acc.hasUsd ? acc.usd : undefined;
+      s.costCny = acc.hasCny ? acc.cny : undefined;
+      if (acc.longContextRequests > 0) {
+        s.longContextRequests = acc.longContextRequests;
+      }
+    } else {
+      const est = estimateCost(s);
+      if (est.usd != null) s.costUsd = est.usd;
+      else s.costUsd = undefined;
+      if (est.cny != null) s.costCny = est.cny;
+      else s.costCny = undefined;
+    }
+  }
+
+  const hourly = hourlyMap.toArray();
+  // 小时桶已在 add() 时按单次请求选档；缺价的桶再用汇总估（多请求走基础档）
+  for (const h of hourly) {
+    if (h.costUsd != null || h.costCny != null) continue;
+    const est = estimateCost({
+      model: h.model,
+      inputTokens: h.inputTokens || 0,
+      outputTokens: h.outputTokens || 0,
+      cacheReadTokens: h.cacheReadTokens || 0,
+      cacheWriteTokens: h.cacheWriteTokens || 0,
+      reasoningTokens: h.reasoningTokens || 0,
+      requestCount: h.events,
+      singleRequest: (h.events || 0) === 1,
+    });
+    if (est.usd != null) h.costUsd = est.usd;
+    else h.costUsd = undefined;
+    if (est.cny != null) h.costCny = est.cny;
+    else h.costCny = undefined;
+  }
 
   const totals = merged.reduce(
     (acc, s) => {
@@ -158,35 +261,7 @@ export async function scanAll(opts = {}) {
     }
   );
 
-  // 全局再保底一次：任意适配器 pending 的 sessionId → 会话 model
-  if (typeof hourlyMap.resolveSessionModels === "function") {
-    /** @type {Map<string, string>} */
-    const sessionModels = new Map();
-    for (const s of liveSessions) {
-      if (s.model) sessionModels.set(`${s.client}:${s.sessionId}`, s.model);
-    }
-    // 并账后的父也可能带 model；用 merged 再补一轮
-    for (const s of merged) {
-      if (s.model) sessionModels.set(`${s.client}:${s.sessionId}`, s.model);
-    }
-    hourlyMap.resolveSessionModels(sessionModels);
-  }
-
-  const hourly = hourlyMap.toArray();
-  // 小时桶按模型估成本（与会话同一价目表）——成本走势必须按 turn 发生时间分摊，
-  // 不能把整段会话费用压到 lastUsedAt 那一小时。
-  for (const h of hourly) {
-    const est = estimateCost({
-      model: h.model,
-      inputTokens: h.inputTokens || 0,
-      outputTokens: h.outputTokens || 0,
-      cacheReadTokens: h.cacheReadTokens || 0,
-      cacheWriteTokens: h.cacheWriteTokens || 0,
-      reasoningTokens: h.reasoningTokens || 0,
-    });
-    if (est.usd != null) h.costUsd = est.usd;
-    if (est.cny != null) h.costCny = est.cny;
-  }
+  const unpricedModels = collectUnpricedModels(merged);
 
   return {
     scannedAt: new Date().toISOString(),
@@ -194,6 +269,8 @@ export async function scanAll(opts = {}) {
     reports,
     totals,
     dedupReports,
+    unpricedModels,
+    pricingLoadError: loadedPrices.error || undefined,
     sessions: merged,
     /** 按 turn 真实时间的小时桶（本地时区），用于趋势图，非整会话 lastUsedAt */
     hourly,

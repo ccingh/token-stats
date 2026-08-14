@@ -8,7 +8,13 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
-import type { ScanResult, SessionDetail, SessionTranscript } from "./types";
+import type {
+  PriceOverrides,
+  PricingCatalogRow,
+  ScanResult,
+  SessionDetail,
+  SessionTranscript,
+} from "./types";
 
 export interface SyncConfigPublic {
   supabaseUrl: string;
@@ -43,6 +49,27 @@ declare global {
         error?: string;
         transcript?: SessionTranscript;
       }>;
+      pricing?: {
+        get: () => Promise<
+          SyncIpcResult<{
+            overrides: PriceOverrides;
+            catalog: PricingCatalogRow[];
+            loadError?: string | null;
+            path?: string;
+          }>
+        >;
+        save: (payload: {
+          models?: PriceOverrides["models"];
+          aliases?: PriceOverrides["aliases"];
+        }) => Promise<
+          SyncIpcResult<{
+            overrides: PriceOverrides;
+            catalog: PricingCatalogRow[];
+            loadError?: string | null;
+            path?: string;
+          }>
+        >;
+      };
       sync?: {
         getConfig: () => Promise<SyncIpcResult<{ config: SyncConfigPublic }>>;
         saveConfig: (patch: {

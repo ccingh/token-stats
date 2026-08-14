@@ -5,8 +5,40 @@ export function homeDir() {
   return os.homedir();
 }
 
+/**
+ * Codex 数据根目录。CODEX_HOME 可为单个路径，或逗号/分号分隔的多个根。
+ * @returns {string[]}
+ */
+export function codexHomes() {
+  const raw = process.env.CODEX_HOME;
+  if (raw && String(raw).trim()) {
+    return String(raw)
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [path.join(homeDir(), ".codex")];
+}
+
+/**
+ * DeepSeek Harness 数据根。DSH_HOME 可为单个路径，或逗号/分号分隔的多个根。
+ * @returns {string[]}
+ */
+export function dshHomes() {
+  const raw = process.env.DSH_HOME;
+  if (raw && String(raw).trim()) {
+    return String(raw)
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [path.join(homeDir(), ".dsh")];
+}
+
 export function agentPaths() {
   const home = homeDir();
+  const codexHome = codexHomes()[0];
+  const dshHome = dshHomes()[0];
   return {
     opencodeDb: path.join(home, ".local", "share", "opencode", "opencode.db"),
     claudeProjects: path.join(home, ".claude", "projects"),
@@ -21,7 +53,14 @@ export function agentPaths() {
     mimocodeDb: process.env.MIMOCODE_HOME
       ? path.join(process.env.MIMOCODE_HOME, "data", "mimocode.db")
       : path.join(home, ".local", "share", "mimocode", "mimocode.db"),
-    codexStateDb: path.join(home, ".codex", "state_5.sqlite"),
+    codexHome,
+    codexSessions: path.join(codexHome, "sessions"),
+    codexArchivedSessions: path.join(codexHome, "archived_sessions"),
+    codexSessionIndex: path.join(codexHome, "session_index.jsonl"),
+    codexStateDb: path.join(codexHome, "state_5.sqlite"),
     cursorAiTracking: path.join(home, ".cursor", "ai-tracking", "ai-code-tracking.db"),
+    dshHome,
+    dshSessions: path.join(dshHome, "sessions"),
+    dshProjCache: path.join(dshHome, "storages", "session_projcache.json"),
   };
 }

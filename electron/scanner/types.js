@@ -28,6 +28,7 @@
  * @property {string} [sessionKind]
  * @property {number} [turnCount]
  * @property {number} [requestCount] 模型/API 请求次数（有则写；区间视图可来自 hourly.events）
+ * @property {number} [longContextRequests] 命中长上下文档的请求数（如 Grok prompt ≥200k）
  * @property {string[]} [mergedChildren]
  * @property {number} [childCount]
  * @property {boolean} [deleted] 源日志已不存在，来自本地持久化
@@ -215,9 +216,28 @@ function partsFromObject(o) {
 }
 
 /**
+ * Claude Code 内部占位模型：无响应 / API 错误 stub，用量为 0。
+ * 不能当会话模型，否则最后一条会把整段真实模型盖掉。
+ * @param {unknown} raw
+ */
+export function isPlaceholderModel(raw) {
+  if (raw == null) return false;
+  const s = String(raw).trim();
+  if (!s) return false;
+  const low = s.toLowerCase();
+  return (
+    low === "<synthetic>" ||
+    low === "synthetic" ||
+    low === "<unknown>" ||
+    low === "(unknown)"
+  );
+}
+
+/**
  * @param {string} id
  */
 function cleanModelId(id) {
+  if (isPlaceholderModel(id)) return undefined;
   const clean = String(id || "")
     .replace(/-build$/, "")
     .trim();
@@ -284,6 +304,10 @@ export function makeSession(partial) {
     turnCount: partial.turnCount != null ? num(partial.turnCount) : undefined,
     requestCount:
       partial.requestCount != null ? num(partial.requestCount) : undefined,
+    longContextRequests:
+      partial.longContextRequests != null
+        ? num(partial.longContextRequests)
+        : undefined,
     mergedChildren: partial.mergedChildren?.length
       ? [...partial.mergedChildren]
       : undefined,
@@ -338,6 +362,11 @@ export function mergeChildSessions(sessions) {
     {
       const pr = (parent.requestCount || 0) + (child.requestCount || 0);
       parent.requestCount = pr > 0 ? pr : undefined;
+    }
+    {
+      const lc =
+        (parent.longContextRequests || 0) + (child.longContextRequests || 0);
+      parent.longContextRequests = lc > 0 ? lc : undefined;
     }
     if (child.costUsd != null) {
       parent.costUsd = (parent.costUsd || 0) + child.costUsd;

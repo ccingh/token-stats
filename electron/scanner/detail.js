@@ -12,6 +12,8 @@ import * as pi from "./adapters/pi.js";
 import * as reasonix from "./adapters/reasonix.js";
 import * as grok from "./adapters/grok.js";
 import * as mimocode from "./adapters/mimocode.js";
+import * as codex from "./adapters/codex.js";
+import * as dsh from "./adapters/dsh.js";
 import { agentPaths } from "./paths.js";
 import { toIso } from "./types.js";
 import { normalizeAgentName } from "./agentLabel.js";
@@ -168,6 +170,22 @@ async function grokDetail(sessionId) {
 async function discoverChildren(client, sessionId) {
   /** @type {{ id: string, agentName?: string }[]} */
   const out = [];
+
+  if (client === "codex") {
+    try {
+      return codex.listChildren(sessionId);
+    } catch {
+      return out;
+    }
+  }
+
+  if (client === "dsh") {
+    try {
+      return dsh.listChildren(sessionId);
+    } catch {
+      return out;
+    }
+  }
 
   if (client === "opencode" || client === "zcode" || client === "mimocode") {
     try {
@@ -449,6 +467,12 @@ async function mergeChildTurnDetails(detail, client, children) {
         case "mimocode":
           childDetail = mimocode.getDetail(childId);
           break;
+        case "codex":
+          childDetail = codex.getDetail(childId);
+          break;
+        case "dsh":
+          childDetail = dsh.getDetail(childId);
+          break;
         case "kimi":
           // kimi 子 agent 在同一 session 目录的 wire 里，不单独 merge
           childDetail = null;
@@ -591,6 +615,12 @@ export async function getSessionDetail(opts) {
       break;
     case "mimocode":
       detail = mimocode.getDetail(sessionId);
+      break;
+    case "codex":
+      detail = codex.getDetail(sessionId);
+      break;
+    case "dsh":
+      detail = dsh.getDetail(sessionId);
       break;
     default:
       throw new Error(`未知客户端：${client}`);

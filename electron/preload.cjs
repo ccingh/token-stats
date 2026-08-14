@@ -5,6 +5,10 @@ const api = {
   scan: (opts) => ipcRenderer.invoke("scan:run", opts),
   sessionDetail: (opts) => ipcRenderer.invoke("session:detail", opts),
   sessionTranscript: (opts) => ipcRenderer.invoke("session:transcript", opts),
+  pricing: {
+    get: () => ipcRenderer.invoke("pricing:get"),
+    save: (payload) => ipcRenderer.invoke("pricing:save", payload),
+  },
   features: { enableSync: !!enableSync },
 };
 

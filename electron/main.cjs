@@ -108,6 +108,7 @@ function emptyError(message) {
       costUsd: 0,
     },
     sessions: [],
+    unpricedModels: [],
   };
 }
 
@@ -234,6 +235,42 @@ async function createWindow() {
 
 function registerIpc() {
   ipcMain.handle("scan:run", async (_evt, opts) => runScan(opts || {}));
+
+  ipcMain.handle("pricing:get", async () => {
+    try {
+      const pricing = await import("./scanner/pricing.js");
+      const ov = await import("./scanner/pricing-overrides.js");
+      const builtinKeys = pricing.getBuiltinKeys();
+      const loaded = ov.loadPriceOverrides(userDataDir(), { builtinKeys });
+      pricing.applyPriceOverrides(loaded.overrides);
+      return okResult({
+        overrides: loaded.overrides,
+        catalog: pricing.getPricingCatalog(),
+        loadError: loaded.error,
+        path: loaded.path,
+      });
+    } catch (err) {
+      return errResult(err);
+    }
+  });
+
+  ipcMain.handle("pricing:save", async (_evt, payload) => {
+    try {
+      const pricing = await import("./scanner/pricing.js");
+      const ov = await import("./scanner/pricing-overrides.js");
+      const builtinKeys = pricing.getBuiltinKeys();
+      const saved = ov.savePriceOverrides(payload, userDataDir(), { builtinKeys });
+      pricing.applyPriceOverrides(saved);
+      return okResult({
+        overrides: saved,
+        catalog: pricing.getPricingCatalog(),
+        loadError: null,
+        path: ov.overridesPath(userDataDir()),
+      });
+    } catch (err) {
+      return errResult(err);
+    }
+  });
 
   if (enableSync) {
     ipcMain.handle("sync:getConfig", async () => {

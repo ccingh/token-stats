@@ -20,6 +20,8 @@
   --c-pi: #4aa79b;
   --c-reasonix: #e8a54b;
   --c-mimocode: #ff6a3d;
+  --c-codex: #2e8cff;
+  --c-dsh: #4d6bfe;
   --radius: 10px;
   /* Electron titleBarOverlay：系统最小化/最大化/关闭占位（与 main.cjs height:40 对齐） */
   --win-titlebar-h: env(titlebar-area-height, 40px);
@@ -1449,6 +1451,12 @@ th.sortable:hover {
 .client-mimocode {
   background: var(--c-mimocode, #ff6a3d);
 }
+.client-codex {
+  background: var(--c-codex, #2e8cff);
+}
+.client-dsh {
+  background: var(--c-dsh, #4d6bfe);
+}
 
 .chip-row {
   display: flex;
@@ -2695,6 +2703,123 @@ tbody tr:hover td {
   background: #3f1515;
   color: var(--danger);
   border: 1px solid #7f1d1d;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* ---------- 模型价格 ---------- */
+
+.pricing-panel {
+  width: min(720px, 100%);
+  max-height: min(92vh, 860px);
+}
+
+.pricing-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pricing-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pricing-list-compact {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.pricing-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+}
+
+.pricing-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.pricing-row-main strong {
+  font-size: 13px;
+}
+
+.pricing-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pricing-tag {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pricing-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.pricing-form {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 12px 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.unpriced-banner {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+  font-size: 12px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.unpriced-banner:hover {
+  background: rgba(251, 191, 36, 0.14);
+}
+
+.unpriced-banner.warn {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(127, 29, 29, 0.25);
+  color: #fca5a5;
 }
 
 /* ---------- 响应式 ---------- */

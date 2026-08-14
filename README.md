@@ -6,7 +6,7 @@
 |---|---|
 | 作者 | **CCingh** |
 | 邮箱 | **ccingh@proton.me** |
-| 版本 | 1.1.0 |
+| 版本 | 1.1.2 |
 | 仓库 | https://github.com/ccingh/token-stats |
 
 ---
@@ -14,7 +14,7 @@
 ## 特性
 
 - **本地扫描**：不经过第三方统计服务，直接读各 Agent 本机数据
-- **多工具**：OpenCode / Claude Code / Grok Build / Kimi Code / ZCode / Pi / Reasonix / 小米 MiMo Code
+- **多工具**：OpenCode / Claude Code / Codex / Grok Build / Kimi Code / ZCode / Pi / Reasonix / 小米 MiMo Code / DeepSeek Harness（dsh）
 - **多维汇总**：按工具、模型、项目、日期；趋势图与活跃热力图
 - **请求 / Turn / 消息数**、缓存命中率、子会话并账
 - **模型主名统计** + 思考档位（max / high）彩色标记（档位不拆散模型统计）
@@ -39,12 +39,14 @@
 |--------|----------|
 | OpenCode | `~/.local/share/opencode/opencode.db` |
 | Claude Code | `~/.claude/projects/**/*.jsonl` |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl`（或 `$CODEX_HOME`） |
 | Grok Build | `~/.grok/sessions/**` + `~/.grok/logs/unified.jsonl` |
 | Kimi Code | `~/.kimi-code/**/wire.jsonl` |
 | ZCode | `~/.zcode/cli/db/db.sqlite` |
 | Pi | `~/.omp/agent/sessions/**/*.jsonl` |
 | Reasonix | `~/.reasonix/sessions` |
 | MiMo Code | `~/.local/share/mimocode/mimocode.db`（或 `$MIMOCODE_HOME/data/mimocode.db`） |
+| DeepSeek Harness（dsh） | `~/.dsh/sessions/**/session.jsonl.zstd`（或 `$DSH_HOME`） |
 
 Windows 下 `~` 一般为用户主目录（如 `C:\Users\<你>`）。
 
@@ -85,7 +87,8 @@ npm run dist:nosync     # 无云同步 UI 的安装包
 ## 成本估算
 
 - 部分工具会话自带 `cost` 时优先使用，否则按 `electron/scanner/pricing.js` 刊例估算
-- 匹配规则：模型主名包含价目表 key（思考档位不参与定价键）
+- 匹配规则：模型主名包含价目表 key（思考档位不参与定价键）；`-free` 后缀视为免费档，花费记 0，不进未定价列表
+- **长上下文**：有单次请求 prompt 长度时按档计费（Grok 4.5/4.6：≥200k 整单走长档）；会话加总仍用基础档兜底
 - **人民币**：有官方 `cny` 刊例的模型直接按人民币计；否则用实时汇率折算美元成本
 - 调价：编辑 `electron/scanner/pricing.js` 即可
 

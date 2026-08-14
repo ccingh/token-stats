@@ -374,6 +374,7 @@ export async function scan(ctx = {}) {
         reasoningTokens: 0,
         model: model || undefined,
         sessionId: f.sessionId,
+        singleRequest: false,
       });
     }
 

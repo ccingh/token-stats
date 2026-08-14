@@ -373,6 +373,7 @@ async function loadUnifiedUsage(opts = {}) {
         outputTokens: part.output,
         cacheReadTokens: part.cacheRead,
         reasoningTokens: part.reasoning,
+        promptTokens: part.input + part.cacheRead,
         model: modelHint != null ? String(modelHint) : undefined,
         // 多数 inference_done 无 model；会话扫完后用 summary 保底
         sessionId: sid,
@@ -650,6 +651,7 @@ export async function scan(ctx = {}) {
           outputTokens: ev.output,
           cacheReadTokens: ev.cacheRead,
           reasoningTokens: ev.reasoning,
+          promptTokens: ev.input + ev.cacheRead,
           model: ev.model,
           sessionId: sid,
           requestCount: ev.requests,

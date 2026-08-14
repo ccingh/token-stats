@@ -45,7 +45,9 @@ function isUnknownModel(name?: string | null): boolean {
     s === "（未知模型）" ||
     s === "(未知模型)" ||
     s === "（未知）" ||
-    s === "未知"
+    s === "未知" ||
+    s === "<synthetic>" ||
+    /^<?synthetic>?$/i.test(s)
   );
 }
 
@@ -96,32 +98,38 @@ function matchesDrill(s: SessionRecord, drill: DrillFilter | null): boolean {
 const CLIENT_ORDER = [
   "opencode",
   "claude",
+  "codex",
   "grok",
   "kimi",
   "zcode",
   "pi",
   "reasonix",
   "mimocode",
+  "dsh",
 ] as const;
 const CLIENT_LABELS: Record<(typeof CLIENT_ORDER)[number], string> = {
   opencode: "OpenCode",
   claude: "Claude",
+  codex: "Codex",
   grok: "Grok Build",
   kimi: "Kimi",
   zcode: "ZCode",
   pi: "Pi",
   reasonix: "Reasonix",
   mimocode: "MiMo Code",
+  dsh: "DeepSeek Harness",
 };
 const CLIENT_COLORS: Record<string, string> = {
   opencode: "#35b586",
   claude: "#d98e5f",
+  codex: "#2e8cff",
   grok: "#9385d9",
   kimi: "#5ea3c7",
   zcode: "#c97698",
   pi: "#4aa79b",
   reasonix: "#e8a54b",
   mimocode: "#ff6a3d",
+  dsh: "#4d6bfe",
 };
 const MODEL_PALETTE = [
   "#35b586",
@@ -468,7 +476,9 @@ export default function App() {
       const raw = localStorage.getItem("ts-mobile:clients");
       if (!raw) return new Set(CLIENT_ORDER);
       const arr = JSON.parse(raw) as string[];
-      return arr.length ? new Set(arr) : new Set(CLIENT_ORDER);
+      const valid = arr.filter((c) => (CLIENT_ORDER as readonly string[]).includes(c));
+      if (valid.length >= CLIENT_ORDER.length - 1) return new Set(CLIENT_ORDER);
+      return valid.length ? new Set(valid) : new Set(CLIENT_ORDER);
     } catch {
       return new Set(CLIENT_ORDER);
     }

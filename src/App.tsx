@@ -12,6 +12,7 @@ import {
   formatHourRange,
   weekdayNameMonFirst,
 } from "./insights";
+import PricingPanel from "./PricingPanel";
 import SessionDetailPanel from "./SessionDetail";
 import SyncPanel from "./SyncPanel";
 import type { ScanResult, SessionRecord, UsageSource } from "./types";
@@ -39,24 +40,28 @@ const ENABLE_SYNC = import.meta.env.VITE_ENABLE_SYNC !== "false";
 const CLIENT_ORDER = [
   "opencode",
   "claude",
+  "codex",
   "grok",
   "kimi",
   "zcode",
   "pi",
   "reasonix",
   "mimocode",
+  "dsh",
 ] as const;
 
 /** 界面展示名（筛选仍用 client id） */
 const CLIENT_LABELS: Record<(typeof CLIENT_ORDER)[number], string> = {
   opencode: "OpenCode",
   claude: "Claude",
+  codex: "Codex",
   grok: "Grok Build",
   kimi: "Kimi",
   zcode: "ZCode",
   pi: "Pi",
   reasonix: "Reasonix",
   mimocode: "MiMo Code",
+  dsh: "DeepSeek Harness",
 };
 
 const RANGES = [
@@ -165,6 +170,37 @@ const UNKNOWN_MODEL = "未知模型";
 /** 未知模型展示用灰（深色底上仍清晰） */
 const UNKNOWN_MODEL_COLOR = "#a8a8b3";
 
+function UnpricedBanner({
+  items,
+  loadError,
+  onOpen,
+}: {
+  items?: { model: string; sessions: number; totalTokens: number }[];
+  loadError?: string;
+  onOpen: (models: string[]) => void;
+}) {
+  if (loadError) {
+    return (
+      <button type="button" className="unpriced-banner warn" onClick={() => onOpen([])}>
+        价格覆盖文件无法读取，已改用内置刊例 · 打开价格设置
+      </button>
+    );
+  }
+  if (!items?.length) return null;
+  const names = items.slice(0, 3).map((i) => i.model).join("、");
+  const extra = items.length > 3 ? ` 等 ${items.length} 个` : "";
+  return (
+    <button
+      type="button"
+      className="unpriced-banner"
+      onClick={() => onOpen(items.map((i) => i.model))}
+    >
+      {items.length} 个模型没有价格（{names}
+      {extra}）· 花费未计入 · 去定价
+    </button>
+  );
+}
+
 function isUnknownModel(name?: string | null): boolean {
   if (name == null || !String(name).trim()) return true;
   const s = String(name).trim();
@@ -173,7 +209,9 @@ function isUnknownModel(name?: string | null): boolean {
     s === "（未知模型）" ||
     s === "(未知模型)" ||
     s === "（未知）" ||
-    s === "未知"
+    s === "未知" ||
+    s === "<synthetic>" ||
+    /^<?synthetic>?$/i.test(s)
   );
 }
 
@@ -553,6 +591,7 @@ export default function App() {
       if (!raw) return new Set(CLIENT_ORDER);
       const arr = JSON.parse(raw) as string[];
       const valid = arr.filter((c) => (CLIENT_ORDER as readonly string[]).includes(c));
+      if (valid.length >= CLIENT_ORDER.length - 1) return new Set(CLIENT_ORDER);
       return valid.length ? new Set(valid) : new Set(CLIENT_ORDER);
     } catch {
       return new Set(CLIENT_ORDER);
@@ -576,6 +615,8 @@ export default function App() {
     dir: -1,
   });
   const [showSync, setShowSync] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
+  const [pricingFocus, setPricingFocus] = useState<string[]>([]);
   /** 默认隐藏 0 token / 未调用模型 会话 */
   const [hideEmpty, setHideEmpty] = useState(
     () => localStorage.getItem("token-stats:hideEmpty") !== "0"
@@ -2512,6 +2553,21 @@ export default function App() {
             同步
           </button>
         )}
+        {typeof window !== "undefined" && window.tokenStats?.pricing && (
+          <button
+            className={`btn ghost ${showPricing ? "on" : ""}`}
+            onClick={() => {
+              setPricingFocus([]);
+              setShowPricing(true);
+            }}
+            title="自定义模型价格与别名"
+          >
+            价格
+            {(result?.unpricedModels?.length || 0) > 0
+              ? ` ${result!.unpricedModels!.length}`
+              : ""}
+          </button>
+        )}
         <button
           className={`btn ghost ${showReports ? "on" : ""}`}
           onClick={() => setShowReports((v) => !v)}
@@ -2594,6 +2650,18 @@ export default function App() {
           open={showSync}
           onClose={() => setShowSync(false)}
           scanResult={result}
+          onNeedScan={runScan}
+        />
+      )}
+      {typeof window !== "undefined" && window.tokenStats?.pricing && (
+        <PricingPanel
+          open={showPricing}
+          onClose={() => {
+            setShowPricing(false);
+            setPricingFocus([]);
+          }}
+          unpricedModels={result?.unpricedModels}
+          focusModels={pricingFocus}
           onNeedScan={runScan}
         />
       )}
@@ -2715,6 +2783,16 @@ export default function App() {
         {view === "home" && (
         <>
         <section className="panel lifetime-panel">
+          {window.tokenStats?.pricing && (
+            <UnpricedBanner
+              items={result?.unpricedModels}
+              loadError={result?.pricingLoadError}
+              onOpen={(models) => {
+                setPricingFocus(models);
+                setShowPricing(true);
+              }}
+            />
+          )}
           <div className="panel-head">
             <h2>生涯</h2>
             <span className="panel-hint">
@@ -3090,6 +3168,16 @@ export default function App() {
 
         {view === "overview" && (
           <>
+        {window.tokenStats?.pricing && (
+          <UnpricedBanner
+            items={result?.unpricedModels}
+            loadError={result?.pricingLoadError}
+            onOpen={(models) => {
+              setPricingFocus(models);
+              setShowPricing(true);
+            }}
+          />
+        )}
         <section className="hero">
           <div className="hero-main">
             <div className="hero-label">
@@ -4694,8 +4782,20 @@ function SessionRow({
           </div>
         ) : null}
       </td>
-      <td className="num">
+      <td
+        className="num"
+        title={
+          s.longContextRequests
+            ? `${s.longContextRequests} 次请求按长上下文档计费（prompt ≥ 档界，如 Grok 200k）`
+            : undefined
+        }
+      >
         {hideCost ? "•••" : formatCost(displayCost(s, currency, rate), currency)}
+        {!hideCost && s.longContextRequests ? (
+          <div className="title-sub lifetime-sub">
+            长上下文 {s.longContextRequests}
+          </div>
+        ) : null}
       </td>
       <td>
         <span className={`quality ${s.quality}`}>{qualityLabel(s.quality)}</span>

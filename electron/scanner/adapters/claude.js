@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
-import { makeSession, toIso } from "../types.js";
+import { isPlaceholderModel, makeSession, toIso } from "../types.js";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -184,21 +184,26 @@ async function parseJsonl(file, projectFolder, projectDir, scannedAt, hourly) {
       const outTok = Number(usage.output_tokens) || 0;
       const cr = Number(usage.cache_read_input_tokens) || 0;
       const cw = Number(usage.cache_creation_input_tokens) || 0;
+      const nextModel = obj?.message?.model || obj?.model;
+      // <synthetic>：Claude 内部 stub（No response requested / API Error），token 为 0
+      // 若用它覆盖 session.model，整段会变成未定价「模型」
+      if (isPlaceholderModel(nextModel) && inTok + outTok + cr + cw <= 0) {
+        continue;
+      }
       input += inTok;
       output += outTok;
       cacheRead += cr;
       cacheWrite += cw;
       messageCount += 1;
       turnCount += 1;
-      if (obj?.message?.model) model = obj.message.model;
-      else if (obj?.model) model = obj.model;
+      if (nextModel && !isPlaceholderModel(nextModel)) model = nextModel;
       if (hourly?.add && obj.timestamp) {
         hourly.add(id, obj.timestamp, {
           inputTokens: inTok,
           outputTokens: outTok,
           cacheReadTokens: cr,
           cacheWriteTokens: cw,
-          model: obj?.message?.model || obj?.model || undefined,
+          model: model || undefined,
           sessionId,
         });
       }
@@ -389,12 +394,15 @@ export async function getDetail(sessionId) {
     }
     const usage = obj?.message?.usage || obj?.usage;
     if (!usage || typeof usage !== "object") continue;
-    const model =
-      obj?.message?.model || obj?.model || "(unknown)";
+    const rawModel = obj?.message?.model || obj?.model;
     const input = Number(usage.input_tokens) || 0;
     const output = Number(usage.output_tokens) || 0;
     const cacheRead = Number(usage.cache_read_input_tokens) || 0;
     const cacheWrite = Number(usage.cache_creation_input_tokens) || 0;
+    if (isPlaceholderModel(rawModel) && input + output + cacheRead + cacheWrite <= 0) {
+      continue;
+    }
+    const model = rawModel && !isPlaceholderModel(rawModel) ? rawModel : "(unknown)";
     // 消息级 agent 字段（若有）
     const msgAgent =
       obj?.agent ||

@@ -427,6 +427,8 @@ export function scan(ctx = {}) {
             model: sessionModel,
             sessionId: sid,
             requestCount: reqN || 1,
+            // 整会话兜底：reqN=0 时不能当成 1 次请求去套长档
+            singleRequest: reqN === 1,
           });
         }
       }
