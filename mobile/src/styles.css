@@ -173,6 +173,74 @@ button {
   border-color: var(--accent);
 }
 
+.search-wrap {
+  width: 100%;
+  margin-left: 0;
+}
+
+.search-menu {
+  position: fixed;
+  z-index: 80;
+  max-height: min(50vh, 380px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  padding: 4px 0 8px;
+}
+
+.search-group-title {
+  padding: 10px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 10px 14px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.search-hit:hover,
+.search-hit.active {
+  background: var(--surface-2);
+}
+
+.search-hit-label {
+  font-size: 15px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-hit-hint {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-empty {
+  padding: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 /* ================= 按钮 ================= */
 
 .btn {

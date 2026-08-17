@@ -15,7 +15,7 @@ import { modelAggKey } from "./types.js";
  *   仍用基础档，避免均长把早期短请求也套进高档。
  * - 缓存：若 cacheRead ≤ input，默认 input 含缓存子集，计费用 (input-cache)*input价 + cache*缓存价
  *
- * 价格核对日期：2026-08-13（公开文档，会随厂商调价过期）
+ * 价格核对日期：2026-08-14（公开文档，会随厂商调价过期）
  *
  * @typedef {{ input: number, output: number, cacheRead?: number, cacheWrite?: number }} Price
  * @typedef {Price & { upTo: number }} PriceTier  // upTo: 该档最大输入 token（不含上界用 Infinity）
@@ -135,9 +135,26 @@ const PRICES = {
   "grok-3": { input: 3, output: 15 },
 
   // ─── 智谱 BigModel 官方人民币 bigmodel.cn/pricing ─────────────────
+  // GLM-5.3（2026-08-14 发布）：docs.z.ai 按量页尚未单列 5.3。
+  // Coding Plan / 智谱套餐已把 5.3 当作旗舰，5.2/5.1 请求自动路由到 5.3。
+  // 按量先套同档旗舰刊例（GLM-5.2：$1.4/$4.4/缓存$0.26，¥8/¥28/¥2），
+  // 避免 contains 命中短 key「glm-5」用成 $1/$3.5。刊例更新后再改。
+  // GLM-5-Turbo：官方 $1.2/$4.0/缓存$0.24；国内 0–32k ¥5/¥22/缓存¥1.2
   // GLM-5.2：输入 ¥8 / 输出 ¥28 / 缓存命中 ¥2；[32k+) 更高档
   // GLM-5：0–32k ¥4/¥18/缓存¥1；32k+ ¥6/¥22/¥1.5
   // GLM-4.7：0–32k 短输出 ¥2/¥8/¥0.4；更长档更高
+  "glm-5.3": {
+    input: 1.4,
+    output: 4.4,
+    cacheRead: 0.26,
+    cny: { input: 8, output: 28, cacheRead: 2 },
+  },
+  "glm-5-turbo": {
+    input: 1.2,
+    output: 4.0,
+    cacheRead: 0.24,
+    cny: { input: 5, output: 22, cacheRead: 1.2 },
+  },
   "glm-5.1": {
     input: 1.05,
     output: 4.2,

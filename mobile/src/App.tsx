@@ -22,6 +22,8 @@ import type {
   UsageSource,
 } from "./types";
 import { sanitizeSnapshotPayload } from "./types";
+import SearchBox from "./SearchBox";
+import { matchesSession } from "./searchMatch";
 import {
   applyUsageScope,
   buildHourlyDimTotals,
@@ -775,23 +777,7 @@ export default function App() {
   );
 
   const matchQuery = useCallback(
-    (s: SessionRecord) => {
-      const q = query.trim().toLowerCase();
-      if (!q) return true;
-      const hay = [
-        s.client,
-        clientLabel(s.client),
-        s.title,
-        s.cwd,
-        s.model,
-        s.sessionId,
-        s.agentName,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    },
+    (s: SessionRecord) => matchesSession(s, query, CLIENT_LABELS),
     [query]
   );
 
@@ -1937,13 +1923,7 @@ export default function App() {
     } else {
       for (const s of sessionsAll) {
         if (!activeClients.has(s.client)) continue;
-        if (q) {
-          const hay = [s.client, s.title, s.cwd, s.model, s.sessionId]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-          if (!hay.includes(q)) continue;
-        }
+        if (q && !matchesSession(s, q, CLIENT_LABELS)) continue;
         const iso = sessionDate(s);
         if (!iso) continue;
         const k = dayKey(iso);
@@ -2285,11 +2265,19 @@ export default function App() {
                     : "隐藏已删除"}
                 </button>
               </div>
-              <input
-                className="search"
-                placeholder="搜索标题 / 路径 / 模型…"
+              <SearchBox
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={setQuery}
+                placeholder="搜索标题 / 路径 / 模型 / 工具…"
+                sessions={sessionsAll.filter(passHideAndClient)}
+                clientLabels={CLIENT_LABELS}
+                onPickSession={(client, sessionId) => {
+                  const s = sessionsAll.find(
+                    (x) => x.client === client && x.sessionId === sessionId
+                  );
+                  if (s) setDetail(s);
+                }}
+                onPickDrill={drillToSessions}
               />
             </div>
           )}

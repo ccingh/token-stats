@@ -1,33 +1,59 @@
-# Token Stats
+<p align="center">
+  <img src="docs/readme/icon.png" width="88" height="88" alt="Token Stats">
+</p>
 
-**本机多 Agent 会话 Token 用量统计** — 桌面端扫描本地日志，可选同步到云端；手机端只读查看。
+<h1 align="center">Token Stats</h1>
+
+<p align="center">
+  <a href="./README.md">中文</a> · <a href="./README.en.md">English</a>
+</p>
+
+<p align="center">
+  <img alt="version" src="https://img.shields.io/badge/version-1.1.2-34d399?style=flat-square">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-2e8cff?style=flat-square">
+  <img alt="platform" src="https://img.shields.io/badge/Windows-NSIS%20%2F%20portable-9385d9?style=flat-square">
+  <img alt="privacy" src="https://img.shields.io/badge/local--first-不上传对话-6b6b76?style=flat-square">
+</p>
+
+<p align="center">
+  <b>本机多 Agent 会话 Token 用量统计</b><br>
+  桌面扫描本地日志 · 可选同步到你自己的云 · 手机只读查看
+</p>
+
+<p align="center">
+  <img src="docs/readme/banner.jpg" alt="Token Stats" width="920">
+</p>
 
 | | |
 |---|---|
 | 作者 | **CCingh** |
 | 邮箱 | **ccingh@proton.me** |
-| 版本 | 1.1.2 |
 | 仓库 | https://github.com/ccingh/token-stats |
+
+---
+
+## 怎么走数据
+
+本机日志进桌面；云同步是可选项，只传统计快照。对话正文不会离开这台电脑。
+
+<p align="center">
+  <img src="docs/readme/flow.svg" alt="本机日志 → 扫描 → 桌面统计 → 可选同步 → 只读查看" width="920">
+</p>
 
 ---
 
 ## 特性
 
-- **本地扫描**：不经过第三方统计服务，直接读各 Agent 本机数据
-- **多工具**：OpenCode / Claude Code / Codex / Grok Build / Kimi Code / ZCode / Pi / Reasonix / 小米 MiMo Code / DeepSeek Harness（dsh）
-- **多维汇总**：按工具、模型、项目、日期；趋势图与活跃热力图
-- **请求 / Turn / 消息数**、缓存命中率、子会话并账
-- **模型主名统计** + 思考档位（max / high）彩色标记（档位不拆散模型统计）
-- **成本估算**：价目表（USD / 可选官方 CNY）+ 实时汇率
-- **会话明细**：Turn 级用量、Agent 汇总、对话预览（桌面本地）
-- **云同步**（可选）：Supabase 上传统计快照，手机端只读
-- **打包**：Windows NSIS 安装包 / 便携版 / 无同步版
-
----
-
-## 截图与数据说明
-
-应用**只读**本机已有会话数据，不上传对话正文到第三方（云同步仅上传你自建的 Supabase 统计快照）。
+| | |
+|---|---|
+| **本地扫描** | 直接读各 Agent 落盘数据，不经过第三方统计服务 |
+| **10 个工具** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness |
+| **多维汇总** | 按工具、模型、项目、日期；趋势图与 53 周热力图 |
+| **请求口径** | 请求 / Turn / 消息数、缓存命中、子会话并账 |
+| **模型主名** | 思考档位（max / high）只做彩色标记，不拆散模型统计 |
+| **成本** | 刊例价 USD + 官方人民币；`-free` 记 0；长上下文按单次请求选档 |
+| **会话明细** | Turn 级用量、Agent 汇总、对话预览（仅桌面读本地） |
+| **云同步** | 可选，传到你自己的 Supabase；手机只读 |
 
 **不会**读取 Tokscale / Token Monitor / cc-switch 等非 Agent 会话源。
 
@@ -77,7 +103,7 @@ npm run dist:portable   # 仅便携版
 npm run dist:nosync     # 无云同步 UI 的安装包
 ```
 
-产物示例：
+产物：
 
 - `release/Token Stats-<version>-win-x64.exe`
 - `release/Token Stats-<version>-portable.exe`
@@ -108,7 +134,7 @@ supabase/schema.sql
 
 ### 2. Auth
 
-- Authentication → Providers → **Email** 开启  
+- Authentication → Providers → **Email** 开启
 - 自用可关闭 **Confirm email**
 
 ### 3. 桌面操作
@@ -152,6 +178,7 @@ token-stats/
 │   └── sync/           # Supabase 上传客户端
 ├── src/                # 桌面 React UI
 ├── mobile/             # Capacitor 只读端
+├── docs/readme/        # README 用图
 ├── supabase/           # SQL schema
 └── package.json
 ```

@@ -13,8 +13,10 @@ import {
   weekdayNameMonFirst,
 } from "./insights";
 import PricingPanel from "./PricingPanel";
+import SearchBox from "./SearchBox";
 import SessionDetailPanel from "./SessionDetail";
 import SyncPanel from "./SyncPanel";
+import { matchesSession } from "./searchMatch";
 import type { ScanResult, SessionRecord, UsageSource } from "./types";
 import {
   modelAggKey,
@@ -827,9 +829,8 @@ export default function App() {
     });
   }, [result, rangeStart, rangeEnd]);
 
-  /** 工具/隐藏/搜索（不限日期）— 区间归因命中时用 */
-  const allowedFiltered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+  /** 工具/隐藏（不含搜索词）— 下拉候选池 */
+  const searchPool = useMemo(() => {
     const sessions = result?.sessions || [];
     return sessions.filter((s) => {
       if (!activeClients.has(s.client)) return false;
@@ -837,24 +838,59 @@ export default function App() {
       if (hideOrphans && isOrphanChild(s)) return false;
       if (hideDeleted && isDeletedSession(s)) return false;
       if (hideDedupExcluded && isDedupExcluded(s)) return false;
-      if (!q) return true;
-      const label =
-        CLIENT_LABELS[s.client as (typeof CLIENT_ORDER)[number]] || s.client;
-      const hay = [s.client, label, s.title, s.cwd, s.model, s.sessionId]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
+      return true;
     });
   }, [
     result,
     activeClients,
-    query,
     hideEmpty,
     hideOrphans,
     hideDeleted,
     hideDedupExcluded,
   ]);
+
+  /** 工具/隐藏/搜索（不限日期）— 区间归因命中时用 */
+  const allowedFiltered = useMemo(() => {
+    const q = query.trim();
+    if (!q) return searchPool;
+    return searchPool.filter((s) => matchesSession(s, q, CLIENT_LABELS));
+  }, [searchPool, query]);
+
+  /** 搜索词 + 下钻共同圈定的会话；小时桶按这个集合收口 */
+  const scopedSessionKeys = useMemo(() => {
+    const q = query.trim();
+    const keys = new Set<string>();
+    for (const s of searchPool) {
+      if (q && !matchesSession(s, q, CLIENT_LABELS)) continue;
+      if (!matchesDrill(s, drill)) continue;
+      keys.add(`${s.client}:${s.sessionId}`);
+    }
+    return keys;
+  }, [searchPool, query, drill]);
+
+  const scopedHourly = useMemo(() => {
+    const hourly = result?.hourly || [];
+    if (!hourly.length) return hourly;
+    if (!query.trim() && !drill) return hourly;
+    return hourly.filter((row) => {
+      const sid = row.sessionId != null ? String(row.sessionId).trim() : "";
+      if (sid) return scopedSessionKeys.has(`${row.client}:${sid}`);
+      if (drill) {
+        if (drill.kind === "model") {
+          const k = modelAggKey(row.model) || row.model || UNKNOWN_MODEL;
+          return k === drill.model;
+        }
+        if (drill.kind === "client") return row.client === drill.id;
+        if (drill.kind === "day") return String(row.hour).slice(0, 10) === drill.day;
+        return false;
+      }
+      return matchesSession(
+        { client: row.client, sessionId: "", model: row.model },
+        query,
+        CLIENT_LABELS
+      );
+    });
+  }, [result?.hourly, scopedSessionKeys, query, drill]);
 
   /** 再叠时间窗（lastUsedAt）— 生涯模式 / 区间 fallback */
   const rangedFiltered = useMemo(() => {
@@ -934,7 +970,7 @@ export default function App() {
 
   /** 区间内小时桶维度汇总（工具/模型/日）— 与趋势同一时间轴 */
   const hourlyDims = useMemo(() => {
-    const hourly = result?.hourly || [];
+    const hourly = scopedHourly;
     if (!hourly.length) return null;
     const todayKey = localDayKey(new Date());
     const rates = modelCostPerToken(
@@ -951,7 +987,7 @@ export default function App() {
       rangeEnd
     );
   }, [
-    result?.hourly,
+    scopedHourly,
     result?.sessions,
     rangeStart,
     rangeEnd,
@@ -973,14 +1009,7 @@ export default function App() {
   );
 
   function matchesQuery(s: SessionRecord, q: string): boolean {
-    if (!q) return true;
-    const label =
-      CLIENT_LABELS[s.client as (typeof CLIENT_ORDER)[number]] || s.client;
-    const hay = [s.client, label, s.title, s.cwd, s.model, s.sessionId]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(q);
+    return matchesSession(s, q, CLIENT_LABELS);
   }
 
   /** 当前筛选条件下会被 hideEmpty 藏掉的数量 */
@@ -1291,7 +1320,7 @@ export default function App() {
     if ((result?.hourly?.length || 0) > 0) {
       const todayKey = localDayKey(new Date());
       const byCwd = buildProjectTokensFromHourly(
-        result!.hourly || [],
+        scopedHourly,
         result?.sessions || [],
         rangeStart,
         todayKey,
@@ -1347,6 +1376,7 @@ export default function App() {
     return [...map.values()].sort((a, b) => b.totalTokens - a.totalTokens);
   }, [
     aggSessions,
+    scopedHourly,
     result?.hourly,
     result?.sessions,
     rangeStart,
@@ -1406,7 +1436,7 @@ export default function App() {
   // 按天：有小时桶时按「当天真实发生」汇总
   const dailyRows = useMemo(() => {
     const map = new Map<string, AggRow>();
-    const hourly = result?.hourly || [];
+    const hourly = scopedHourly;
     if (hourly.length > 0) {
       const dims =
         hourlyDims ||
@@ -1463,6 +1493,7 @@ export default function App() {
   }, [
     aggSessions,
     hourlyDims,
+    scopedHourly,
     result?.hourly,
     result?.sessions,
     rangeStart,
@@ -1842,7 +1873,7 @@ export default function App() {
     const q = query.trim().toLowerCase();
     const byDay = new Map<string, number>();
     // 优先 turn 小时桶（真实发生日）；无则回退会话 lastUsedAt
-    const hourlyRows = result?.hourly || [];
+    const hourlyRows = scopedHourly;
     if (hourlyRows.length) {
       for (const row of hourlyRows) {
         if (!activeClients.has(row.client)) continue;
@@ -1855,29 +1886,7 @@ export default function App() {
     } else {
       for (const s of result?.sessions || []) {
         if (!activeClients.has(s.client)) continue;
-        if (q) {
-          const hay = [s.client, s.title, s.cwd, s.model, s.sessionId]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-          if (!hay.includes(q)) continue;
-        }
-        const iso = sessionDate(s);
-        if (!iso) continue;
-        const k = dayKey(iso);
-        byDay.set(k, (byDay.get(k) || 0) + s.totalTokens);
-      }
-    }
-    // 小时桶路径下搜索词无法按会话标题滤；有 query 时回退会话归日（可带搜索）
-    if (q && hourlyRows.length) {
-      byDay.clear();
-      for (const s of result?.sessions || []) {
-        if (!activeClients.has(s.client)) continue;
-        const hay = [s.client, s.title, s.cwd, s.model, s.sessionId]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(q)) continue;
+        if (q && !matchesSession(s, q, CLIENT_LABELS)) continue;
         const iso = sessionDate(s);
         if (!iso) continue;
         const k = dayKey(iso);
@@ -1917,7 +1926,7 @@ export default function App() {
       return weeks[i - 1][0].key.slice(5, 7) !== m ? `${Number(m)}月` : "";
     });
     return { weeks, max, monthLabels };
-  }, [result, activeClients, query]);
+  }, [result, activeClients, query, scopedHourly, drill]);
 
   // 按模型分布（概览）：与时间窗一致
   const modelDist = useMemo(() => {
@@ -2771,11 +2780,19 @@ export default function App() {
                 : `未计入${dedupExcludedTotal ? ` ${dedupExcludedTotal}` : ""}`}
             </button>
           )}
-          <input
-            className="search"
-            placeholder="搜索标题 / 路径 / 模型 / Grok Build…"
+          <SearchBox
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={setQuery}
+            placeholder="搜索标题 / 路径 / 模型 / 工具…"
+            sessions={searchPool}
+            clientLabels={CLIENT_LABELS}
+            onPickSession={(client, sessionId) => {
+              const s = (result?.sessions || []).find(
+                (x) => x.client === client && x.sessionId === sessionId
+              );
+              if (s) setDetailSession(s);
+            }}
+            onPickDrill={drillToSessions}
           />
         </div>
         )}

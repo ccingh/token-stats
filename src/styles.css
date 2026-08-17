@@ -997,8 +997,12 @@ button.brand-home.on-home .brand-mark {
   background: var(--accent);
 }
 
-.search {
+.search-wrap {
+  position: relative;
   margin-left: auto;
+}
+
+.search {
   width: 260px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1007,6 +1011,69 @@ button.brand-home.on-home .brand-mark {
   font-size: 12.5px;
   color: var(--text);
   transition: border-color 0.12s ease;
+}
+
+.search-menu {
+  position: fixed;
+  z-index: 80;
+  max-height: min(380px, calc(100vh - 80px));
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  padding: 4px 0 6px;
+}
+
+.search-group-title {
+  padding: 8px 12px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.search-hit:hover,
+.search-hit.active {
+  background: var(--surface-2);
+}
+
+.search-hit-label {
+  font-size: 13px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-hit-hint {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .search::placeholder {
@@ -1143,23 +1210,35 @@ th.sortable:hover {
 .hero-metrics {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px 8px;
   align-content: center;
+  align-items: start;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .metric .label {
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  line-height: 1.25;
+  /* 两词标签（Cache Read）可换行，单词语标签留空行，数字始终同一基线 */
+  min-height: calc(1.25em * 2);
 }
 
 .metric .value {
   font-variant-numeric: tabular-nums;
   font-size: 17px;
   font-weight: 600;
-  margin-top: 3px;
+  margin-top: 2px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 /* ---------- 面板 ---------- */
@@ -2833,10 +2912,6 @@ tbody tr:hover td {
     border-right: none;
     border-bottom: 1px solid var(--border-soft);
     padding: 0 0 14px;
-  }
-
-  .hero-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .search {
