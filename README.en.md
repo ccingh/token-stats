@@ -47,7 +47,7 @@ Local logs feed the desktop app. Cloud sync is optional and only sends a stats s
 | | |
 |---|---|
 | **Local scan** | Reads each agent’s on-disk data; no third-party stats service |
-| **10 tools** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness |
+| **11 tools** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness / Freebuff |
 | **Breakdowns** | By tool, model, project, and day; trend chart and 53-week heatmap |
 | **Request grain** | Requests / turns / messages, cache hits, child-session rollup |
 | **Base model** | Thinking tiers (max / high) are badges only; they do not split model totals |
@@ -73,6 +73,7 @@ It does **not** read Tokscale / Token Monitor / cc-switch or other non-agent sou
 | Reasonix | `~/.reasonix/sessions` |
 | MiMo Code | `~/.local/share/mimocode/mimocode.db` (or `$MIMOCODE_HOME/data/mimocode.db`) |
 | DeepSeek Harness (dsh) | `~/.dsh/sessions/**/session.jsonl.zstd` (or `$DSH_HOME`) |
+| Freebuff | `~/.config/manicode/projects/**/chats/*/log.jsonl` (per-step `contextTokenCount` split into uncached input + prefix-overlap estimated cache; output estimated from the paired End reply/tool calls; no official local cache — excluded from official hit rate. Estimate-only UI is `–（x）`; overview mixed display is official overall hit, with parentheses for overall hit after including estimated cache, e.g. `92%（95%）`) |
 
 On Windows, `~` is usually the user profile (e.g. `C:\Users\<you>`).
 

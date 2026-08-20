@@ -5,6 +5,7 @@ import {
   useMemo,
   useState,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import { getUsdCny, type FxRate } from "./fx";
 import {
@@ -19,10 +20,12 @@ import SyncPanel from "./SyncPanel";
 import { matchesSession } from "./searchMatch";
 import type { ScanResult, SessionRecord, UsageSource } from "./types";
 import {
+  formatTokPerSec,
   modelAggKey,
   prettyModel,
   prettyModelVariant,
   sanitizeScanResult,
+  tokensPerSec,
 } from "./types";
 import {
   applyUsageScope,
@@ -50,6 +53,7 @@ const CLIENT_ORDER = [
   "reasonix",
   "mimocode",
   "dsh",
+  "freebuff",
 ] as const;
 
 /** 界面展示名（筛选仍用 client id） */
@@ -64,6 +68,7 @@ const CLIENT_LABELS: Record<(typeof CLIENT_ORDER)[number], string> = {
   reasonix: "Reasonix",
   mimocode: "MiMo Code",
   dsh: "DeepSeek Harness",
+  freebuff: "Freebuff",
 };
 
 const RANGES = [
@@ -124,7 +129,8 @@ type SortKey =
   | "hit"
   | "requests"
   | "turns"
-  | "msgs";
+  | "msgs"
+  | "speed";
 
 /** 从分类表下钻到会话列表的筛选 */
 type DrillFilter =
@@ -284,11 +290,15 @@ function formatTokens(n: number): string {
 /**
  * 缓存命中率 = Cache Read / (Input + Cache Read)
  * Input 为未命中部分时与各 adapter 口径一致；分母为 0 返回 null。
+ * noCacheData 为 true 时（freebuff 等本地无 cache 记录）直接返回 null，
+ * 不参与命中率统计，避免 input 拉低整体命中率。
  */
 function cacheHitRate(
   inputTokens?: number,
-  cacheReadTokens?: number
+  cacheReadTokens?: number,
+  noCacheData?: boolean
 ): number | null {
+  if (noCacheData) return null;
   const input = Math.max(0, Number(inputTokens) || 0);
   const cache = Math.max(0, Number(cacheReadTokens) || 0);
   const denom = input + cache;
@@ -296,10 +306,142 @@ function cacheHitRate(
   return cache / denom;
 }
 
-function formatHitRate(rate: number | null | undefined): string {
-  if (rate == null || !Number.isFinite(rate)) return "–";
+function pctLabel(rate: number): string {
   return `${Math.round(rate * 100)}%`;
 }
+
+function hitRateSplit(
+  rate: number | null | undefined,
+  overall?: number | null
+): { primary: string; extra: string | null } {
+  const official =
+    rate != null && Number.isFinite(rate) ? pctLabel(rate) : null;
+  const withEst =
+    overall != null && Number.isFinite(overall) ? pctLabel(overall) : null;
+  if (official && withEst) {
+    if (Math.round(rate! * 100) === Math.round(overall! * 100)) {
+      return { primary: official, extra: null };
+    }
+    return { primary: official, extra: withEst };
+  }
+  if (official) return { primary: official, extra: null };
+  if (withEst) return { primary: "–", extra: withEst };
+  return { primary: "–", extra: null };
+}
+
+function formatHitRate(
+  rate: number | null | undefined,
+  overall?: number | null
+): string {
+  const { primary, extra } = hitRateSplit(rate, overall);
+  return extra ? `${primary}（${extra}）` : primary;
+}
+
+function cacheReadSplit(
+  official?: number | null,
+  est?: number | null
+): { primary: string; extra: string | null } {
+  const read = Math.max(0, Number(official) || 0);
+  const estimated = Math.max(0, Number(est) || 0);
+  if (read > 0 && estimated > 0) {
+    return { primary: formatTokens(read), extra: formatTokens(estimated) };
+  }
+  if (read > 0) return { primary: formatTokens(read), extra: null };
+  if (estimated > 0) return { primary: "–", extra: formatTokens(estimated) };
+  return { primary: formatTokens(0), extra: null };
+}
+
+function SplitMetricValue({
+  primary,
+  extra,
+}: {
+  primary: string;
+  extra?: string | null;
+}) {
+  if (!extra) return primary;
+  return (
+    <>
+      {primary}
+      <span className="metric-est">（{extra}）</span>
+    </>
+  );
+}
+
+/**
+ * freebuff：input 可能是旧扫描的整段 snapshot，或新扫描的未命中。
+ * 用 total ≈ input+output+reason(+est) 判断，返回未命中 input。
+ */
+function uncachedInputOf(s: {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+  estCacheReadTokens?: number;
+  noCacheData?: boolean;
+}): number {
+  const input = Math.max(0, Number(s.inputTokens) || 0);
+  const est = Math.max(0, Number(s.estCacheReadTokens) || 0);
+  if (s.noCacheData === false || est <= 0) return input;
+  const rest =
+    Math.max(0, Number(s.outputTokens) || 0) +
+    Math.max(0, Number(s.reasoningTokens) || 0);
+  const total = Math.max(0, Number(s.totalTokens) || 0);
+  if (total > 0) {
+    const asSnapshot = Math.abs(input + rest - total);
+    const asSplit = Math.abs(input + est + rest - total);
+    if (asSnapshot + 1 < asSplit) return Math.max(0, input - est);
+  }
+  return input;
+}
+
+/** 把估算 cache 计入后的总体命中，不是某一工具自己的估算命中 */
+function overallHitRate(
+  uncachedInput?: number,
+  officialCache?: number,
+  estCache?: number
+): number | null {
+  const est = Math.max(0, Number(estCache) || 0);
+  if (est <= 0) return null;
+  return cacheHitRate(
+    Math.max(0, Number(uncachedInput) || 0),
+    Math.max(0, Number(officialCache) || 0) + est
+  );
+}
+
+function formatEstTokens(n?: number | null): string | null {
+  const v = Math.max(0, Number(n) || 0);
+  if (v <= 0) return null;
+  return `–（${formatTokens(v)}）`;
+}
+
+/** 官方 cache 优先；有估算则括号并列（不写入 cacheRead） */
+function formatCacheRead(official?: number | null, est?: number | null): string {
+  const read = Math.max(0, Number(official) || 0);
+  const estimated = Math.max(0, Number(est) || 0);
+  if (read > 0 && estimated > 0) {
+    return `${formatTokens(read)}（${formatTokens(estimated)}）`;
+  }
+  if (read > 0) return formatTokens(read);
+  return formatEstTokens(estimated) || formatTokens(0);
+}
+
+const EST_HIT_TITLE =
+  "本地无官方 cache，不计入汇总命中率。括号内为相邻请求 context 前缀重叠估算";
+
+const EST_HIT_MIXED_TITLE =
+  "主数字为官方总体命中（不含估算 cache）。括号内为把估算 cache 计入后的总体命中，不是某一工具自己的估算命中";
+
+const EST_CACHE_TITLE =
+  "本地无官方 cache。括号内为相邻请求 context 前缀重叠估算，不计入汇总 Cache Read / 命中率";
+
+const EST_CACHE_MIXED_TITLE =
+  "主数字为官方 Cache Read。括号内为无官方 cache 客户端（如 Freebuff）的前缀重叠估算，不计入官方 Cache Read / 命中率";
+
+const SPEED_TITLE =
+  "生成速度 = (Output + Reasoning) ÷ 模型请求耗时（含首 token，不含工具执行）。只统计本地有耗时记录的请求。";
+
+const EST_SPEED_TITLE =
+  "无官方耗时。括号内为本地估算（Grok：loop→工具/回合结束），不计入汇总速度。";
 
 /**
  * 命中率色阶（对齐 opencode-visual-cache）：
@@ -377,7 +519,8 @@ function hourlyBucketCost(
   rates: { byModel: Map<string, number>; overall: number }
 ): number {
   const direct = displayCost(row, currency, rate);
-  if (direct != null && direct > 0) return direct;
+  // 显式 $0（Freebuff 等免费档）必须保留，不能再按其它工具同模型均价回填
+  if (direct != null && Number.isFinite(direct)) return direct;
   const tok = row.totalTokens || 0;
   if (tok <= 0) return 0;
   const m = row.model || UNKNOWN_MODEL;
@@ -657,16 +800,20 @@ export default function App() {
     setDrill(null);
   }
 
-  /** 下钻到会话列表；可选先把工具筛选放宽，避免被 activeClients 挡住 */
-  function drillToSessions(next: DrillFilter) {
+  /** 搜索点模型/工具/路径：就地筛选，不跳页。 */
+  function applySearchDrill(next: DrillFilter) {
     setDrill(next);
     if (next.kind === "client") {
-      // 只看该工具：与顶栏 chip 一致
       const one = new Set([next.id]);
       setActiveClients(one);
       localStorage.setItem("token-stats:clients", JSON.stringify([...one]));
     }
     setQuery("");
+  }
+
+  /** 分类表下钻到会话列表；可选先把工具筛选收成该工具 */
+  function drillToSessions(next: DrillFilter) {
+    applySearchDrill(next);
     switchView("sessions");
   }
 
@@ -1094,6 +1241,11 @@ export default function App() {
         reasoningTokens: t.reasoningTokens,
         totalTokens: t.totalTokens,
         requestCount: t.events || 0,
+        genMs: t.genMs || 0,
+        genTokens: t.genTokens || 0,
+        estGenMs: t.estGenMs || 0,
+        estGenTokens: t.estGenTokens || 0,
+        estCacheReadTokens: t.estCacheReadTokens || 0,
         cost,
       };
     }
@@ -1106,16 +1258,26 @@ export default function App() {
       reasoningTokens: 0,
       totalTokens: 0,
       requestCount: 0,
+      genMs: 0,
+      genTokens: 0,
+      estGenMs: 0,
+      estGenTokens: 0,
+      estCacheReadTokens: 0,
       cost: 0,
     };
     for (const s of filteredAgg) {
-      base.inputTokens += s.inputTokens || 0;
+      base.inputTokens += uncachedInputOf(s);
       base.outputTokens += s.outputTokens || 0;
       base.cacheReadTokens += s.cacheReadTokens || 0;
       base.cacheWriteTokens += s.cacheWriteTokens || 0;
       base.reasoningTokens += s.reasoningTokens || 0;
       base.totalTokens += s.totalTokens || 0;
+      base.estCacheReadTokens += s.estCacheReadTokens || 0;
       base.requestCount += s.requestCount || 0;
+      base.genMs += s.genMs || 0;
+      base.genTokens += s.genTokens || 0;
+      base.estGenMs += s.estGenMs || 0;
+      base.estGenTokens += s.estGenTokens || 0;
       base.cost += displayCost(s, currency, fx.rate) || 0;
     }
     return base;
@@ -1135,7 +1297,7 @@ export default function App() {
         case "output":
           return s.outputTokens;
         case "hit": {
-          const r = cacheHitRate(s.inputTokens, s.cacheReadTokens);
+          const r = cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData);
           return r == null ? -1 : r;
         }
         case "cost":
@@ -1146,6 +1308,12 @@ export default function App() {
           return s.turnCount ?? -1;
         case "msgs":
           return s.messageCount ?? -1;
+        case "speed":
+          return (
+            tokensPerSec(s.genTokens, s.genMs) ??
+            tokensPerSec(s.estGenTokens, s.estGenMs) ??
+            -1
+          );
         default:
           return s.totalTokens;
       }
@@ -1176,12 +1344,12 @@ export default function App() {
     const head = [
       "client", "title", "cwd", "model", "lastUsedAt",
       "requestCount", "turnCount", "messageCount",
-      "input", "output", "cacheRead", "cacheWrite", "reasoning", "cacheHitRate", "total",
+      "input", "output", "cacheRead", "cacheWrite", "reasoning", "cacheHitRate", "tokPerSec", "total",
       "costUsd", "costCny",
     ];
     const lines = [head.join(",")];
     for (const s of sortedSessions) {
-      const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens);
+      const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData);
       lines.push(
         [
           s.client, s.title, s.cwd, s.model, sessionDate(s) || "",
@@ -1191,6 +1359,10 @@ export default function App() {
           s.inputTokens, s.outputTokens, s.cacheReadTokens, s.cacheWriteTokens,
           s.reasoningTokens,
           hit != null ? (hit * 100).toFixed(1) : "",
+          (() => {
+            const sp = tokensPerSec(s.genTokens, s.genMs);
+            return sp != null ? sp.toFixed(2) : "";
+          })(),
           s.totalTokens, s.costUsd ?? "", s.costCny ?? "",
         ]
           .map(esc)
@@ -1284,6 +1456,10 @@ export default function App() {
         r.reasoningTokens = p.reasoningTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
         map.set(key, r);
@@ -1298,6 +1474,7 @@ export default function App() {
         }
         r.sessions += 1;
         if (s.usageSource === "lifetime-fallback") r.fallbackSessions += 1;
+        addHitFields(r, s);
       }
     } else {
       for (const s of aggSessions) {
@@ -1353,6 +1530,11 @@ export default function App() {
             hasCost = true;
           }
           reqs += s.requestCount || 0;
+          r.genMs += s.genMs || 0;
+          r.genTokens += s.genTokens || 0;
+          r.estGenMs += s.estGenMs || 0;
+          r.estGenTokens += s.estGenTokens || 0;
+          addHitFields(r, s);
         }
         r.cost = cost;
         r.hasCost = hasCost;
@@ -1400,10 +1582,21 @@ export default function App() {
         r.reasoningTokens = p.reasoningTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
         r.sessions = hourlyDims.sessionsByModel?.get(key) || 0;
         map.set(key, r);
+      }
+      // 命中率：小时桶没有 noCacheData 维度，用会话补（官方排除 freebuff；估算另记）
+      for (const s of aggSessions) {
+        const key = modelAggKey(s.model) || s.model || UNKNOWN_MODEL;
+        const r = map.get(key);
+        if (!r) continue;
+        addHitFields(r, s);
       }
       // 无小时明细的黄标兜底：仍按会话主名挂一行，避免完全消失
       for (const s of aggSessions) {
@@ -1464,9 +1657,21 @@ export default function App() {
         r.reasoningTokens = p.reasoningTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
         map.set(key, r);
+      }
+      // 命中率：小时桶没有 noCacheData 维度，用会话补（官方排除 freebuff；估算另记）
+      for (const s of aggSessions) {
+        const iso = sessionDate(s);
+        const key = iso ? dayKey(iso) : "无日期";
+        const r = map.get(key);
+        if (!r) continue;
+        addHitFields(r, s);
       }
       for (const day of map.keys()) {
         const onDay = buildSessionUsageOnDay(hourly, day, activeClients);
@@ -1600,7 +1805,7 @@ export default function App() {
   // 用量趋势：优先 turn 小时桶；可按工具(client) 或 模型(model) 堆叠
   const trend = useMemo(() => {
     type Bucket = { key: string; byStack: Map<string, number>; total: number };
-    const hourlyRows = result?.hourly || [];
+    const hourlyRows = scopedHourly;
     const hasHourly = hourlyRows.length > 0;
     const byModel = trendStack === "model";
 
@@ -1863,7 +2068,7 @@ export default function App() {
     rangeStart,
     rangeEnd,
     range,
-    result?.hourly,
+    scopedHourly,
     activeClients,
     trendStack,
   ]);
@@ -2210,17 +2415,26 @@ export default function App() {
       vsPrev = pctChange(tokens, prevTokens);
     }
 
+    const estCacheBar = totals.estCacheReadTokens || 0;
+    const heroInput = uncachedInputOf({
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      reasoningTokens: totals.reasoningTokens,
+      totalTokens: totals.totalTokens,
+      estCacheReadTokens: estCacheBar || undefined,
+    });
     const compTotal =
-      totals.inputTokens +
+      heroInput +
       totals.outputTokens +
       totals.cacheReadTokens +
+      estCacheBar +
       totals.cacheWriteTokens +
       totals.reasoningTokens;
     // 构成条用独立色，避开工具色 / 主强调绿
     const composition = [
-      { key: "Input", tokens: totals.inputTokens, color: "#22d3ee" },
+      { key: "Input", tokens: heroInput, color: "#22d3ee" },
       { key: "Output", tokens: totals.outputTokens, color: "#fb7185" },
-      { key: "Cache R", tokens: totals.cacheReadTokens, color: "#a3e635" },
+      { key: "Cache R", tokens: totals.cacheReadTokens + estCacheBar, color: "#a3e635" },
       { key: "Cache W", tokens: totals.cacheWriteTokens, color: "#818cf8" },
       { key: "Reason", tokens: totals.reasoningTokens, color: "#e879f9" },
     ].filter((c) => c.tokens > 0);
@@ -2726,6 +2940,16 @@ export default function App() {
               {fallbackCount} 条未拆分 · 已标「全量」
             </span>
           )}
+          {query.trim() && (
+            <button
+              type="button"
+              className="btn ghost drill-chip on"
+              onClick={() => setQuery("")}
+              title="清除搜索词（概览数字已按搜索收口）"
+            >
+              搜索：{query.trim()} · 清除
+            </button>
+          )}
           {drill && (
             <button
               type="button"
@@ -2792,7 +3016,7 @@ export default function App() {
               );
               if (s) setDetailSession(s);
             }}
-            onPickDrill={drillToSessions}
+            onPickDrill={applySearchDrill}
           />
         </div>
         )}
@@ -3254,32 +3478,116 @@ export default function App() {
             </div>
           </div>
           <div className="hero-metrics">
-            <Metric label="Input" value={formatTokens(totals.inputTokens)} raw={totals.inputTokens} />
+            <Metric
+              label="Input"
+              value={formatTokens(
+                uncachedInputOf({
+                  inputTokens: totals.inputTokens,
+                  outputTokens: totals.outputTokens,
+                  reasoningTokens: totals.reasoningTokens,
+                  totalTokens: totals.totalTokens,
+                  estCacheReadTokens: totals.estCacheReadTokens,
+                })
+              )}
+              raw={totals.inputTokens}
+            />
             <Metric label="Output" value={formatTokens(totals.outputTokens)} raw={totals.outputTokens} />
-            <Metric label="Cache Read" value={formatTokens(totals.cacheReadTokens)} raw={totals.cacheReadTokens} />
-            <Metric label="Cache Write" value={formatTokens(totals.cacheWriteTokens)} raw={totals.cacheWriteTokens} />
-            <Metric label="Reasoning" value={formatTokens(totals.reasoningTokens)} raw={totals.reasoningTokens} />
             {(() => {
-              const hit = cacheHitRate(
-                totals.inputTokens,
-                totals.cacheReadTokens
+              const displayedInput = uncachedInputOf({
+                inputTokens: totals.inputTokens,
+                outputTokens: totals.outputTokens,
+                reasoningTokens: totals.reasoningTokens,
+                totalTokens: totals.totalTokens,
+                estCacheReadTokens: totals.estCacheReadTokens,
+              });
+              const estCacheAmt =
+                (totals.estCacheReadTokens || 0) > 0
+                  ? totals.estCacheReadTokens || 0
+                  : filteredAgg.reduce(
+                      (a, s) => a + (s.noCacheData ? s.estCacheReadTokens || 0 : 0),
+                      0
+                    );
+              const officialCache = totals.cacheReadTokens || 0;
+              let hitInput = 0;
+              let hitCache = 0;
+              for (const s of filteredAgg) {
+                if (!s.noCacheData) {
+                  hitInput += s.inputTokens || 0;
+                  hitCache += s.cacheReadTokens || 0;
+                }
+              }
+              const hit = cacheHitRate(hitInput, hitCache);
+              const overall = overallHitRate(
+                displayedInput,
+                officialCache,
+                estCacheAmt
               );
+              const cacheParts = cacheReadSplit(officialCache, estCacheAmt);
+              const hitParts = hitRateSplit(hit, overall);
               return (
-                <Metric
-                  label="缓存命中"
-                  value={formatHitRate(hit)}
-                  raw={hit != null ? Math.round(hit * 1000) / 10 : 0}
-                  tone={hitRateTone(hit)}
-                  title={
-                    hit != null
-                      ? `Cache Read ÷ (Input + Cache Read)\n${formatTokens(
-                          totals.cacheReadTokens
-                        )} / ${formatTokens(
-                          totals.inputTokens + totals.cacheReadTokens
-                        )}`
-                      : "当前区间无 Prompt / Cache 数据"
-                  }
-                />
+                <>
+                  <Metric
+                    label="Cache Read"
+                    value={
+                      <SplitMetricValue
+                        primary={cacheParts.primary}
+                        extra={cacheParts.extra}
+                      />
+                    }
+                    raw={officialCache}
+                    title={
+                      officialCache > 0 && estCacheAmt > 0
+                        ? `${EST_CACHE_MIXED_TITLE}\n官方 ${formatTokens(
+                            officialCache
+                          )} · 估算 ${formatTokens(estCacheAmt)}`
+                        : officialCache > 0
+                          ? undefined
+                          : EST_CACHE_TITLE
+                    }
+                  />
+                  <Metric
+                    label="Cache Write"
+                    value={formatTokens(totals.cacheWriteTokens)}
+                    raw={totals.cacheWriteTokens}
+                  />
+                  <Metric
+                    label="Reasoning"
+                    value={formatTokens(totals.reasoningTokens)}
+                    raw={totals.reasoningTokens}
+                  />
+                  <Metric
+                    label="缓存命中"
+                    value={
+                      <SplitMetricValue
+                        primary={hitParts.primary}
+                        extra={hitParts.extra}
+                      />
+                    }
+                    raw={
+                      hit != null
+                        ? Math.round(hit * 1000) / 10
+                        : overall != null
+                          ? Math.round(overall * 1000) / 10
+                          : 0
+                    }
+                    tone={hitRateTone(hit)}
+                    title={
+                      hit != null && overall != null
+                        ? `${EST_HIT_MIXED_TITLE}\n官方 ${formatTokens(
+                            hitCache
+                          )} / ${formatTokens(hitInput + hitCache)}\n计入估算 ${formatTokens(
+                            officialCache + estCacheAmt
+                          )} / ${formatTokens(displayedInput + officialCache + estCacheAmt)}`
+                        : hit != null
+                          ? `Cache Read ÷ (Input + Cache Read)\n${formatTokens(
+                              hitCache
+                            )} / ${formatTokens(hitInput + hitCache)}`
+                          : overall != null
+                            ? EST_HIT_TITLE
+                            : "当前区间无 Prompt / Cache 数据（freebuff 等无缓存记录的客户端不计入）"
+                    }
+                  />
+                </>
               );
             })()}
             <Metric
@@ -3291,6 +3599,19 @@ export default function App() {
               }
               raw={totals.requestCount || 0}
               title="模型 API 请求次数（按 turn/推理事件累计；有小时桶时为本区间）"
+            />
+            <Metric
+              label="速度"
+              value={formatTokPerSec(
+                tokensPerSec(totals.genTokens, totals.genMs),
+                tokensPerSec(totals.estGenTokens, totals.estGenMs)
+              )}
+              raw={tokensPerSec(totals.genTokens, totals.genMs) || 0}
+              title={
+                tokensPerSec(totals.genTokens, totals.genMs) != null
+                  ? SPEED_TITLE
+                  : EST_SPEED_TITLE
+              }
             />
           </div>
         </section>
@@ -4034,6 +4355,12 @@ export default function App() {
                     />
                     <SortTh label="Input" k="input" sort={sort} onSort={clickSort} />
                     <SortTh label="Output" k="output" sort={sort} onSort={clickSort} />
+                    <SortTh
+                      label="速度"
+                      k="speed"
+                      sort={sort}
+                      onSort={clickSort}
+                    />
                     <th className="num" title="缓存命中 / 写入（与 Input 不重叠）">
                       Cache R/W
                     </th>
@@ -4235,7 +4562,7 @@ function Metric({
   title,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   raw: number;
   tone?: "none" | "low" | "mid" | "high";
   title?: string;
@@ -4268,6 +4595,18 @@ interface AggRow {
   hasCost: boolean;
   /** 其中有多少条是「无法按区间拆分、用了全量」 */
   fallbackSessions: number;
+  /** 命中率专用输入（排除 freebuff 等无 cache 记录的客户端） */
+  hitInputTokens: number;
+  /** 命中率专用 cacheRead（排除 freebuff 等无 cache 记录的客户端） */
+  hitCacheReadTokens: number;
+  /** 仅展示：无官方 cache 会话的 input */
+  estHitInputTokens: number;
+  /** 仅展示：前缀重叠估算 cache */
+  estCacheReadTokens: number;
+  genMs: number;
+  genTokens: number;
+  estGenMs: number;
+  estGenTokens: number;
 }
 
 function blankAgg(key: string): AggRow {
@@ -4284,7 +4623,39 @@ function blankAgg(key: string): AggRow {
     cost: 0,
     hasCost: false,
     fallbackSessions: 0,
+    hitInputTokens: 0,
+    hitCacheReadTokens: 0,
+    estHitInputTokens: 0,
+    estCacheReadTokens: 0,
+    genMs: 0,
+    genTokens: 0,
+    estGenMs: 0,
+    estGenTokens: 0,
   };
+}
+
+function addHitFields(
+  r: AggRow,
+  s: {
+    noCacheData?: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+    cacheReadTokens?: number;
+    estCacheReadTokens?: number;
+  }
+) {
+  if (!s.noCacheData) {
+    r.hitInputTokens += s.inputTokens || 0;
+    r.hitCacheReadTokens += s.cacheReadTokens || 0;
+    return;
+  }
+  const est = s.estCacheReadTokens || 0;
+  if (est > 0) {
+    r.estHitInputTokens += uncachedInputOf(s);
+    r.estCacheReadTokens += est;
+  }
 }
 
 function addToAgg(
@@ -4295,12 +4666,17 @@ function addToAgg(
 ) {
   r.sessions += 1;
   r.requestCount += s.requestCount || 0;
-  r.inputTokens += s.inputTokens;
+  r.inputTokens += uncachedInputOf(s);
   r.outputTokens += s.outputTokens;
   r.cacheReadTokens += s.cacheReadTokens;
   r.cacheWriteTokens += s.cacheWriteTokens;
   r.reasoningTokens += s.reasoningTokens;
   r.totalTokens += s.totalTokens;
+  r.genMs += s.genMs || 0;
+  r.genTokens += s.genTokens || 0;
+  r.estGenMs += s.estGenMs || 0;
+  r.estGenTokens += s.estGenTokens || 0;
+  addHitFields(r, s);
   const c = displayCost(s, currency, rate);
   if (c != null) {
     r.cost += c;
@@ -4368,6 +4744,9 @@ function AggTable({
                 </th>
                 <th className="num">Input</th>
                 <th className="num">Output</th>
+                <th className="num" title={SPEED_TITLE}>
+                  速度
+                </th>
                 <th className="num">Cache R/W</th>
                 <th
                   className="num"
@@ -4387,7 +4766,15 @@ function AggTable({
                 const group = open ? listSessions(kind, r.key) : [];
                 const top = group.slice(0, TOP_N);
                 const totalInGroup = open ? group.length : r.sessions;
-                const hit = cacheHitRate(r.inputTokens, r.cacheReadTokens);
+                const hit = cacheHitRate(
+                  r.hitInputTokens,
+                  r.hitCacheReadTokens
+                );
+                const overall = overallHitRate(
+                  r.inputTokens,
+                  r.cacheReadTokens,
+                  r.estCacheReadTokens
+                );
                 const hitTone = hitRateTone(hit);
                 return (
                   <Fragment key={r.key}>
@@ -4435,23 +4822,61 @@ function AggTable({
                       >
                         {r.requestCount > 0 ? r.requestCount.toLocaleString() : "–"}
                       </td>
-                      <td className="num">{formatTokens(r.inputTokens)}</td>
+                      <td
+                        className="num"
+                        title={
+                          r.estCacheReadTokens > 0 &&
+                          uncachedInputOf(r) !== r.inputTokens
+                            ? "未命中的新 tokens（官方 context 快照减去前缀重叠估算）"
+                            : undefined
+                        }
+                      >
+                        {formatTokens(uncachedInputOf(r))}
+                      </td>
                       <td className="num">{formatTokens(r.outputTokens)}</td>
-                      <td className="num">
-                        {formatTokens(r.cacheReadTokens)}
+                      <td
+                        className="num"
+                        title={
+                          r.genMs > 0
+                            ? `${formatTokens(r.genTokens)} / ${(r.genMs / 1000).toFixed(1)}s`
+                            : r.estGenMs > 0
+                              ? EST_SPEED_TITLE
+                              : SPEED_TITLE
+                        }
+                      >
+                        {formatTokPerSec(
+                          tokensPerSec(r.genTokens, r.genMs),
+                          tokensPerSec(r.estGenTokens, r.estGenMs)
+                        )}
+                      </td>
+                      <td
+                        className="num"
+                        title={
+                          r.cacheReadTokens > 0 && r.estCacheReadTokens > 0
+                            ? EST_CACHE_MIXED_TITLE
+                            : r.cacheReadTokens <= 0 && r.estCacheReadTokens > 0
+                              ? EST_CACHE_TITLE
+                              : undefined
+                        }
+                      >
+                        {formatCacheRead(r.cacheReadTokens, r.estCacheReadTokens)}
                         <span className="dim"> / {formatTokens(r.cacheWriteTokens)}</span>
                       </td>
                       <td
                         className={`num hit-rate hit-${hitTone}`}
                         title={
-                          hit != null
-                            ? `${formatTokens(r.cacheReadTokens)} / ${formatTokens(
-                                r.inputTokens + r.cacheReadTokens
-                              )}`
-                            : undefined
+                          hit != null && overall != null
+                            ? EST_HIT_MIXED_TITLE
+                            : hit != null
+                              ? `${formatTokens(r.hitCacheReadTokens)} / ${formatTokens(
+                                  r.hitInputTokens + r.hitCacheReadTokens
+                                )}`
+                              : overall != null
+                                ? EST_HIT_TITLE
+                                : undefined
                         }
                       >
-                        {formatHitRate(hit)}
+                        {formatHitRate(hit, overall)}
                       </td>
                       <td className="num">{formatTokens(r.reasoningTokens)}</td>
                       <td className="num strong" title={r.totalTokens.toLocaleString()}>
@@ -4757,27 +5182,69 @@ function SessionRow({
           ? s.messageCount.toLocaleString()
           : "–"}
       </td>
-      <td className="num">{formatTokens(s.inputTokens)}</td>
+      <td
+        className="num"
+        title={
+          s.noCacheData && (s.estCacheReadTokens || 0) > 0
+            ? "未命中的新 tokens（官方 context 快照减去前缀重叠估算）"
+            : undefined
+        }
+      >
+        {formatTokens(uncachedInputOf(s))}
+      </td>
       <td className="num">{formatTokens(s.outputTokens)}</td>
-      <td className="num">
-        {formatTokens(s.cacheReadTokens)}
+      <td
+        className="num"
+        title={
+          s.genMs
+            ? `${formatTokens(s.genTokens || 0)} / ${(s.genMs / 1000).toFixed(1)}s · ${SPEED_TITLE}`
+            : s.estGenMs
+              ? EST_SPEED_TITLE
+              : SPEED_TITLE
+        }
+      >
+        {formatTokPerSec(
+          tokensPerSec(s.genTokens, s.genMs),
+          tokensPerSec(s.estGenTokens, s.estGenMs)
+        )}
+      </td>
+      <td
+        className="num"
+        title={
+          (s.cacheReadTokens || 0) > 0 && (s.estCacheReadTokens || 0) > 0
+            ? EST_CACHE_MIXED_TITLE
+            : s.noCacheData && (s.estCacheReadTokens || 0) > 0
+              ? EST_CACHE_TITLE
+              : undefined
+        }
+      >
+        {formatCacheRead(s.cacheReadTokens, s.estCacheReadTokens)}
         <span className="dim"> / {formatTokens(s.cacheWriteTokens)}</span>
       </td>
       {(() => {
-        const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens);
+        const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData);
+        const overall = overallHitRate(
+          uncachedInputOf(s),
+          s.cacheReadTokens,
+          s.estCacheReadTokens
+        );
         const tone = hitRateTone(hit);
         return (
           <td
             className={`num hit-rate hit-${tone}`}
             title={
-              hit != null
-                ? `Cache Read ÷ (Input + Cache Read)\n${formatTokens(
-                    s.cacheReadTokens
-                  )} / ${formatTokens(s.inputTokens + s.cacheReadTokens)}`
-                : "无 Prompt/Cache 数据"
+              hit != null && overall != null
+                ? EST_HIT_MIXED_TITLE
+                : hit != null
+                  ? `Cache Read ÷ (Input + Cache Read)\n${formatTokens(
+                      s.cacheReadTokens
+                    )} / ${formatTokens(s.inputTokens + s.cacheReadTokens)}`
+                  : overall != null
+                    ? EST_HIT_TITLE
+                    : "无 Prompt/Cache 数据"
             }
           >
-            {formatHitRate(hit)}
+            {formatHitRate(hit, overall)}
           </td>
         );
       })()}

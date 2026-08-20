@@ -3,6 +3,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
 import { makeSession, toIso } from "../types.js";
+import { sanitizeGenMs } from "../speed.js";
 
 export const id = "pi";
 export const displayName = "Pi (OMP)";
@@ -240,6 +241,8 @@ async function parseSessionFile(file, scannedAt, meta, hourly) {
             cacheWriteTokens: cw,
             reasoningTokens: rt,
             model: msg.model || obj.model || model || undefined,
+            sessionId,
+            durationMs: sanitizeGenMs(msg.duration) || undefined,
           });
         }
       }
@@ -374,6 +377,7 @@ export async function getDetail(sessionId) {
           turns.push({
             index: i,
             ts: toIso(obj.timestamp),
+            durationMs: sanitizeGenMs(msg.duration) || undefined,
             model,
             inputTokens: input,
             outputTokens: output,

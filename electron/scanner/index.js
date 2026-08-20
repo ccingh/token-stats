@@ -8,6 +8,7 @@ import * as reasonix from "./adapters/reasonix.js";
 import * as mimocode from "./adapters/mimocode.js";
 import * as codex from "./adapters/codex.js";
 import * as dsh from "./adapters/dsh.js";
+import * as freebuff from "./adapters/freebuff.js";
 import {
   applyPriceOverrides,
   collectUnpricedModels,
@@ -34,6 +35,10 @@ import { createHourlyMap } from "./hourly.js";
  *   requests: number,
  *   longContextRequests: number,
  *   tokens: number,
+ *   genMs: number,
+ *   genTokens: number,
+ *   estGenMs: number,
+ *   estGenTokens: number,
  *   hasUsd: boolean,
  *   hasCny: boolean,
  * }>} accMap
@@ -46,6 +51,10 @@ function sumSessionAcc(s, accMap) {
   let requests = 0;
   let longContextRequests = 0;
   let tokens = 0;
+  let genMs = 0;
+  let genTokens = 0;
+  let estGenMs = 0;
+  let estGenTokens = 0;
   let hasUsd = false;
   let hasCny = false;
   let hit = false;
@@ -58,11 +67,27 @@ function sumSessionAcc(s, accMap) {
     requests += c.requests || 0;
     longContextRequests += c.longContextRequests || 0;
     tokens += c.tokens || 0;
+    genMs += c.genMs || 0;
+    genTokens += c.genTokens || 0;
+    estGenMs += c.estGenMs || 0;
+    estGenTokens += c.estGenTokens || 0;
     if (c.hasUsd) hasUsd = true;
     if (c.hasCny) hasCny = true;
   }
   if (!hit) return null;
-  return { usd, cny, requests, longContextRequests, tokens, hasUsd, hasCny };
+  return {
+    usd,
+    cny,
+    requests,
+    longContextRequests,
+    tokens,
+    genMs,
+    genTokens,
+    estGenMs,
+    estGenTokens,
+    hasUsd,
+    hasCny,
+  };
 }
 
 /** @type {Array<{ id: string, displayName: string, detect: () => boolean, scan: (ctx?: any) => Promise<any[]> | any[] }>} */
@@ -77,6 +102,7 @@ export const adapters = [
   mimocode,
   codex,
   dsh,
+  freebuff,
 ];
 
 /**
@@ -194,26 +220,45 @@ export async function scanAll(opts = {}) {
       : new Map();
   for (const s of merged) {
     const acc = sumSessionAcc(s, sessionCosts);
-    const want = Number(s.requestCount) || 0;
-    const covered = acc && (want <= 0 || acc.requests + 0.5 >= want * 0.8);
-    if (acc && covered && (acc.hasUsd || acc.hasCny)) {
-      s.costUsd = acc.hasUsd ? acc.usd : undefined;
-      s.costCny = acc.hasCny ? acc.cny : undefined;
-      if (acc.longContextRequests > 0) {
-        s.longContextRequests = acc.longContextRequests;
-      }
+    // Freebuff 全系免费，模型名（deepseek-v4-flash 等）不要套刊例
+    if (s.client === "freebuff") {
+      s.costUsd = 0;
+      s.costCny = 0;
     } else {
-      const est = estimateCost(s);
-      if (est.usd != null) s.costUsd = est.usd;
-      else s.costUsd = undefined;
-      if (est.cny != null) s.costCny = est.cny;
-      else s.costCny = undefined;
+      const want = Number(s.requestCount) || 0;
+      const covered = acc && (want <= 0 || acc.requests + 0.5 >= want * 0.8);
+      if (acc && covered && (acc.hasUsd || acc.hasCny)) {
+        s.costUsd = acc.hasUsd ? acc.usd : undefined;
+        s.costCny = acc.hasCny ? acc.cny : undefined;
+        if (acc.longContextRequests > 0) {
+          s.longContextRequests = acc.longContextRequests;
+        }
+      } else {
+        const est = estimateCost(s);
+        if (est.usd != null) s.costUsd = est.usd;
+        else s.costUsd = undefined;
+        if (est.cny != null) s.costCny = est.cny;
+        else s.costCny = undefined;
+      }
+    }
+    if (acc && acc.genMs > 0 && acc.genTokens > 0) {
+      s.genMs = acc.genMs;
+      s.genTokens = acc.genTokens;
+    }
+    if (acc && acc.estGenMs > 0 && acc.estGenTokens > 0) {
+      s.estGenMs = acc.estGenMs;
+      s.estGenTokens = acc.estGenTokens;
     }
   }
 
   const hourly = hourlyMap.toArray();
   // 小时桶已在 add() 时按单次请求选档；缺价的桶再用汇总估（多请求走基础档）
   for (const h of hourly) {
+    if (h.client === "freebuff") {
+      h.costUsd = 0;
+      h.costCny = 0;
+      continue;
+    }
     if (h.costUsd != null || h.costCny != null) continue;
     const est = estimateCost({
       model: h.model,

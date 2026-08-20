@@ -12,12 +12,18 @@
  *
  * 用量：assistant/chunk(type=usage) 先采样；同 turn/step 的 assistant/message.usage
  * 覆盖。字段已分列（input=未命中，cache 另计）；reasoning 是 output 子集。
+ *
+ * 速度：官方 Web 的 tok/s 也是从同一份日志折的（dsh-session-stats）：
+ *   step/start → assistant/message = 模型墙钟（含 TTFT，不含工具）。
+ * Web 展示用的是「首 token 之后」的 decode 吞吐，数字会略高；
+ * 我们跟其它工具一样用整段墙钟（含 TTFT）。
  */
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import { dshHomes } from "../paths.js";
 import { normalizeAgentName } from "../agentLabel.js";
+import { durationFromRange, sanitizeGenMs } from "../speed.js";
 import {
   makeSession,
   normalizeModelName,
@@ -253,6 +259,14 @@ function usageParts(raw) {
 }
 
 /**
+ * @param {unknown} turn
+ * @param {unknown} step
+ */
+function stepKey(turn, step) {
+  return `${turn}|${step}`;
+}
+
+/**
  * @param {string} file
  * @returns {{
  *   sessionId: string,
@@ -279,6 +293,7 @@ function usageParts(raw) {
  *     cacheReadTokens: number,
  *     cacheWriteTokens: number,
  *     reasoningTokens: number,
+ *     durationMs?: number,
  *   }>,
  *   messages: Array<{
  *     role: string,
@@ -316,6 +331,8 @@ export function parseSessionLog(file) {
   const messages = [];
   /** @type {Map<string, { name?: string, args?: string, ts?: string }>} */
   const pendingTools = new Map();
+  /** @type {Map<string, { start: unknown }>} */
+  const stepTiming = new Map();
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -347,6 +364,15 @@ export function parseSessionLog(file) {
     if (type === "session/title") {
       const t = o.data?.title;
       if (typeof t === "string" && t.trim()) title = t.trim();
+      continue;
+    }
+
+    if (type === "step/start") {
+      const turn = o.data?.turn;
+      const step = o.data?.step;
+      if (turn != null && step != null) {
+        stepTiming.set(stepKey(turn, step), { start: o.time });
+      }
       continue;
     }
 
@@ -443,6 +469,10 @@ export function parseSessionLog(file) {
     const parts = usageParts(usage);
     if (!parts) continue;
     const key = `${turn}|${step}`;
+    const timing = stepTiming.get(key);
+    const durationMs = timing
+      ? durationFromRange(timing.start, o.time)
+      : 0;
     byStep.set(key, {
       turn: Number(turn) || 0,
       step: Number(step) || 0,
@@ -454,6 +484,7 @@ export function parseSessionLog(file) {
       cacheReadTokens: parts.cacheRead,
       cacheWriteTokens: parts.cacheWrite,
       reasoningTokens: parts.reasoning,
+      durationMs: durationMs || undefined,
     });
   }
 
@@ -630,6 +661,7 @@ export function scan(ctx = {}) {
           usedCache = true;
           model = model || defaults.model;
           modelVariant = modelVariant || defaults.variant;
+          const llmMs = sanitizeGenMs(cached?.rows?.sessionStats?.val?.llmMs);
           requests = [
             {
               turn: 0,
@@ -644,6 +676,7 @@ export function scan(ctx = {}) {
               cacheReadTokens: fallback.cacheRead,
               cacheWriteTokens: fallback.cacheWrite,
               reasoningTokens: 0,
+              durationMs: llmMs || undefined,
             },
           ];
         }
@@ -673,6 +706,7 @@ export function scan(ctx = {}) {
             sessionId: parsed.sessionId,
             requestCount: 1,
             singleRequest: !usedCache,
+            durationMs: r.durationMs || undefined,
           });
         }
       }
@@ -730,6 +764,7 @@ export function scan(ctx = {}) {
       if (!fallback) continue;
       const lastTs = toIso(rec?.rows?.sessionListMetadata?.val?.lastPromptAt);
       if (hourly?.add && lastTs) {
+        const llmMs = sanitizeGenMs(rec?.rows?.sessionStats?.val?.llmMs);
         hourly.add(id, lastTs, {
           inputTokens: fallback.input,
           outputTokens: fallback.output,
@@ -738,6 +773,7 @@ export function scan(ctx = {}) {
           model: defaults.model,
           sessionId: sid,
           singleRequest: false,
+          durationMs: llmMs || undefined,
         });
       }
       const title =
@@ -789,6 +825,7 @@ export function getDetail(sessionId) {
     cacheWriteTokens: t.cacheWriteTokens,
     reasoningTokens: t.reasoningTokens,
     loopIndex: t.turn || undefined,
+    durationMs: t.durationMs,
   }));
   /** @type {Map<string, any>} */
   const byModel = new Map();

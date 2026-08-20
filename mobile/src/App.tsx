@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { getUsdCny, type FxRate } from "./fx";
 import {
   computeLifetimeInsights,
@@ -21,7 +28,12 @@ import type {
   SnapshotRow,
   UsageSource,
 } from "./types";
-import { sanitizeSnapshotPayload } from "./types";
+import {
+  formatTokPerSec,
+  modelAggKey,
+  sanitizeSnapshotPayload,
+  tokensPerSec,
+} from "./types";
 import SearchBox from "./SearchBox";
 import { matchesSession } from "./searchMatch";
 import {
@@ -86,7 +98,7 @@ function matchesDrill(s: SessionRecord, drill: DrillFilter | null): boolean {
     case "client":
       return s.client === drill.id;
     case "model":
-      return (s.model || UNKNOWN_MODEL) === drill.model;
+      return (modelAggKey(s.model) || s.model || UNKNOWN_MODEL) === drill.model;
     case "project":
       return (s.cwd || "未知目录") === drill.cwd;
     case "day": {
@@ -108,6 +120,7 @@ const CLIENT_ORDER = [
   "reasonix",
   "mimocode",
   "dsh",
+  "freebuff",
 ] as const;
 const CLIENT_LABELS: Record<(typeof CLIENT_ORDER)[number], string> = {
   opencode: "OpenCode",
@@ -120,6 +133,7 @@ const CLIENT_LABELS: Record<(typeof CLIENT_ORDER)[number], string> = {
   reasonix: "Reasonix",
   mimocode: "MiMo Code",
   dsh: "DeepSeek Harness",
+  freebuff: "Freebuff",
 };
 const CLIENT_COLORS: Record<string, string> = {
   opencode: "#35b586",
@@ -132,6 +146,7 @@ const CLIENT_COLORS: Record<string, string> = {
   reasonix: "#e8a54b",
   mimocode: "#ff6a3d",
   dsh: "#4d6bfe",
+  freebuff: "#34d399",
 };
 const MODEL_PALETTE = [
   "#35b586",
@@ -177,8 +192,11 @@ function formatTokens(n: number): string {
 /** 缓存命中率 = Cache Read / (Input + Cache Read) */
 function cacheHitRate(
   inputTokens?: number,
-  cacheReadTokens?: number
+  cacheReadTokens?: number,
+  noCacheData?: boolean
 ): number | null {
+  // freebuff 等本地无 cache 记录的客户端不参与命中率，避免 input 拉低整体
+  if (noCacheData) return null;
   const input = Math.max(0, Number(inputTokens) || 0);
   const cache = Math.max(0, Number(cacheReadTokens) || 0);
   const denom = input + cache;
@@ -186,9 +204,118 @@ function cacheHitRate(
   return cache / denom;
 }
 
-function formatHitRate(rate: number | null | undefined): string {
-  if (rate == null || !Number.isFinite(rate)) return "–";
+function pctLabel(rate: number): string {
   return `${Math.round(rate * 100)}%`;
+}
+
+function hitRateSplit(
+  rate: number | null | undefined,
+  overall?: number | null
+): { primary: string; extra: string | null } {
+  const official =
+    rate != null && Number.isFinite(rate) ? pctLabel(rate) : null;
+  const withEst =
+    overall != null && Number.isFinite(overall) ? pctLabel(overall) : null;
+  if (official && withEst) {
+    if (Math.round(rate! * 100) === Math.round(overall! * 100)) {
+      return { primary: official, extra: null };
+    }
+    return { primary: official, extra: withEst };
+  }
+  if (official) return { primary: official, extra: null };
+  if (withEst) return { primary: "–", extra: withEst };
+  return { primary: "–", extra: null };
+}
+
+function formatHitRate(
+  rate: number | null | undefined,
+  overall?: number | null
+): string {
+  const { primary, extra } = hitRateSplit(rate, overall);
+  return extra ? `${primary}（${extra}）` : primary;
+}
+
+function cacheReadSplit(
+  official?: number | null,
+  est?: number | null
+): { primary: string; extra: string | null } {
+  const read = Math.max(0, Number(official) || 0);
+  const estimated = Math.max(0, Number(est) || 0);
+  if (read > 0 && estimated > 0) {
+    return { primary: formatTokens(read), extra: formatTokens(estimated) };
+  }
+  if (read > 0) return { primary: formatTokens(read), extra: null };
+  if (estimated > 0) return { primary: "–", extra: formatTokens(estimated) };
+  return { primary: formatTokens(0), extra: null };
+}
+
+function SplitMetricValue({
+  primary,
+  extra,
+}: {
+  primary: string;
+  extra?: string | null;
+}) {
+  if (!extra) return primary;
+  return (
+    <>
+      {primary}
+      <span className="metric-est">（{extra}）</span>
+    </>
+  );
+}
+
+function uncachedInputOf(s: {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+  estCacheReadTokens?: number;
+  noCacheData?: boolean;
+}): number {
+  const input = Math.max(0, Number(s.inputTokens) || 0);
+  const est = Math.max(0, Number(s.estCacheReadTokens) || 0);
+  if (s.noCacheData === false || est <= 0) return input;
+  const rest =
+    Math.max(0, Number(s.outputTokens) || 0) +
+    Math.max(0, Number(s.reasoningTokens) || 0);
+  const total = Math.max(0, Number(s.totalTokens) || 0);
+  if (total > 0) {
+    const asSnapshot = Math.abs(input + rest - total);
+    const asSplit = Math.abs(input + est + rest - total);
+    if (asSnapshot + 1 < asSplit) return Math.max(0, input - est);
+  }
+  return input;
+}
+
+/** 把估算 cache 计入后的总体命中，不是某一工具自己的估算命中 */
+function overallHitRate(
+  uncachedInput?: number,
+  officialCache?: number,
+  estCache?: number
+): number | null {
+  const est = Math.max(0, Number(estCache) || 0);
+  if (est <= 0) return null;
+  return cacheHitRate(
+    Math.max(0, Number(uncachedInput) || 0),
+    Math.max(0, Number(officialCache) || 0) + est
+  );
+}
+
+function formatEstTokens(n?: number | null): string | null {
+  const v = Math.max(0, Number(n) || 0);
+  if (v <= 0) return null;
+  return `–（${formatTokens(v)}）`;
+}
+
+function formatCacheRead(official?: number | null, est?: number | null): string {
+  const read = Math.max(0, Number(official) || 0);
+  const estimated = Math.max(0, Number(est) || 0);
+  if (read > 0 && estimated > 0) {
+    return `${formatTokens(read)}（${formatTokens(estimated)}）`;
+  }
+  if (read > 0) return formatTokens(read);
+  return formatEstTokens(estimated) || formatTokens(0);
 }
 
 /**
@@ -398,6 +525,16 @@ type AggRow = {
   cost: number;
   hasCost: boolean;
   fallbackSessions: number;
+  /** 命中率专用输入（排除 freebuff 等无 cache 记录的客户端） */
+  hitInputTokens: number;
+  /** 命中率专用 cacheRead（排除 freebuff 等无 cache 记录的客户端） */
+  hitCacheReadTokens: number;
+  estHitInputTokens: number;
+  estCacheReadTokens: number;
+  genMs: number;
+  genTokens: number;
+  estGenMs: number;
+  estGenTokens: number;
 };
 
 function blankAgg(key: string): AggRow {
@@ -412,7 +549,36 @@ function blankAgg(key: string): AggRow {
     cost: 0,
     hasCost: false,
     fallbackSessions: 0,
+    hitInputTokens: 0,
+    hitCacheReadTokens: 0,
+    estHitInputTokens: 0,
+    estCacheReadTokens: 0,
+    genMs: 0,
+    genTokens: 0,
+    estGenMs: 0,
+    estGenTokens: 0,
   };
+}
+
+function addHitFields(
+  r: AggRow,
+  s: {
+    noCacheData?: boolean;
+    inputTokens?: number;
+    cacheReadTokens?: number;
+    estCacheReadTokens?: number;
+  }
+) {
+  if (!s.noCacheData) {
+    r.hitInputTokens += s.inputTokens || 0;
+    r.hitCacheReadTokens += s.cacheReadTokens || 0;
+    return;
+  }
+  const est = s.estCacheReadTokens || 0;
+  if (est > 0) {
+    r.estHitInputTokens += uncachedInputOf(s);
+    r.estCacheReadTokens += est;
+  }
 }
 
 function addToAgg(
@@ -423,10 +589,15 @@ function addToAgg(
 ) {
   r.sessions += 1;
   r.requestCount += s.requestCount || 0;
-  r.inputTokens += s.inputTokens || 0;
+  r.inputTokens += uncachedInputOf(s);
   r.outputTokens += s.outputTokens || 0;
   r.cacheReadTokens += s.cacheReadTokens || 0;
   r.totalTokens += s.totalTokens || 0;
+  r.genMs += s.genMs || 0;
+  r.genTokens += s.genTokens || 0;
+  r.estGenMs += s.estGenMs || 0;
+  r.estGenTokens += s.estGenTokens || 0;
+  addHitFields(r, s);
   const c = displayCost(s, currency, rate);
   if (c != null) {
     r.cost += c;
@@ -697,7 +868,7 @@ export default function App() {
     pressTab("home");
   }
 
-  function drillToSessions(next: DrillFilter) {
+  function applySearchDrill(next: DrillFilter) {
     setDrill(next);
     if (next.kind === "client") {
       const one = new Set([next.id]);
@@ -706,6 +877,10 @@ export default function App() {
     }
     setQuery("");
     setExpandedAgg(null);
+  }
+
+  function drillToSessions(next: DrillFilter) {
+    applySearchDrill(next);
     pressTab("sessions");
   }
 
@@ -781,10 +956,50 @@ export default function App() {
     [query]
   );
 
+  const searchPool = useMemo(
+    () => sessionsAll.filter(passHideAndClient),
+    [sessionsAll, passHideAndClient]
+  );
+
+  /** 搜索词 + 下钻共同圈定的会话；小时桶按这个集合收口 */
+  const scopedSessionKeys = useMemo(() => {
+    const q = query.trim();
+    const keys = new Set<string>();
+    for (const s of searchPool) {
+      if (q && !matchesSession(s, q, CLIENT_LABELS)) continue;
+      if (!matchesDrill(s, drill)) continue;
+      keys.add(`${s.client}:${s.sessionId}`);
+    }
+    return keys;
+  }, [searchPool, query, drill]);
+
+  const scopedHourly = useMemo(() => {
+    if (!hourlyAll.length) return hourlyAll;
+    if (!query.trim() && !drill) return hourlyAll;
+    return hourlyAll.filter((row) => {
+      const sid = row.sessionId != null ? String(row.sessionId).trim() : "";
+      if (sid) return scopedSessionKeys.has(`${row.client}:${sid}`);
+      if (drill) {
+        if (drill.kind === "model") {
+          const k = modelAggKey(row.model) || row.model || UNKNOWN_MODEL;
+          return k === drill.model;
+        }
+        if (drill.kind === "client") return row.client === drill.id;
+        if (drill.kind === "day") return String(row.hour).slice(0, 10) === drill.day;
+        return false;
+      }
+      return matchesSession(
+        { client: row.client, sessionId: "", model: row.model },
+        query,
+        CLIENT_LABELS
+      );
+    });
+  }, [hourlyAll, scopedSessionKeys, query, drill]);
+
   /** 工具/隐藏/搜索，不限日期 — 区间归因用 meta */
   const allowedFiltered = useMemo(() => {
-    return sessionsAll.filter((s) => passHideAndClient(s) && matchQuery(s));
-  }, [sessionsAll, passHideAndClient, matchQuery]);
+    return searchPool.filter(matchQuery);
+  }, [searchPool, matchQuery]);
 
   /** lastUsedAt 落在时间窗 — 兜底列表 */
   const rangedFiltered = useMemo(() => {
@@ -851,17 +1066,17 @@ export default function App() {
   );
 
   const hourlyDims = useMemo(() => {
-    if (!hourlyAll.length) return null;
+    if (!scopedHourly.length) return null;
     const todayKey = localDayKey(new Date());
     return buildHourlyDimTotals(
-      hourlyAll,
+      scopedHourly,
       rangeStart,
       todayKey,
       activeClients,
       (row) => hourlyBucketCost(row, currency, fx.rate),
       rangeEnd
     );
-  }, [hourlyAll, rangeStart, activeClients, currency, fx.rate]);
+  }, [scopedHourly, rangeStart, activeClients, currency, fx.rate]);
 
   const filtered = useMemo(
     () => baseFiltered.filter((s) => matchesDrill(s, drill)),
@@ -927,6 +1142,11 @@ export default function App() {
         reasoningTokens: t.reasoningTokens,
         totalTokens: t.totalTokens,
         requestCount: t.events || 0,
+        genMs: t.genMs || 0,
+        genTokens: t.genTokens || 0,
+        estGenMs: t.estGenMs || 0,
+        estGenTokens: t.estGenTokens || 0,
+        estCacheReadTokens: t.estCacheReadTokens || 0,
         cost,
       };
     }
@@ -939,16 +1159,26 @@ export default function App() {
       reasoningTokens: 0,
       totalTokens: 0,
       requestCount: 0,
+      genMs: 0,
+      genTokens: 0,
+      estGenMs: 0,
+      estGenTokens: 0,
+      estCacheReadTokens: 0,
       cost: 0,
     };
     for (const s of filteredAgg) {
-      base.inputTokens += s.inputTokens || 0;
+      base.inputTokens += uncachedInputOf(s);
       base.outputTokens += s.outputTokens || 0;
       base.cacheReadTokens += s.cacheReadTokens || 0;
       base.cacheWriteTokens += s.cacheWriteTokens || 0;
       base.reasoningTokens += s.reasoningTokens || 0;
       base.totalTokens += s.totalTokens || 0;
+      base.estCacheReadTokens += s.estCacheReadTokens || 0;
       base.requestCount += s.requestCount || 0;
+      base.genMs += s.genMs || 0;
+      base.genTokens += s.genTokens || 0;
+      base.estGenMs += s.estGenMs || 0;
+      base.estGenTokens += s.estGenTokens || 0;
       base.cost += displayCost(s, currency, fx.rate) || 0;
     }
     return base;
@@ -966,8 +1196,10 @@ export default function App() {
         va = displayCost(a, currency, fx.rate) ?? -1;
         vb = displayCost(b, currency, fx.rate) ?? -1;
       } else if (sortKey === "hit") {
-        va = cacheHitRate(a.inputTokens, a.cacheReadTokens) ?? -1;
-        vb = cacheHitRate(b.inputTokens, b.cacheReadTokens) ?? -1;
+        va =
+          cacheHitRate(a.inputTokens, a.cacheReadTokens, a.noCacheData) ?? -1;
+        vb =
+          cacheHitRate(b.inputTokens, b.cacheReadTokens, b.noCacheData) ?? -1;
       } else if (sortKey === "requests") {
         va = a.requestCount ?? -1;
         vb = b.requestCount ?? -1;
@@ -1033,7 +1265,7 @@ export default function App() {
     const todayKey = localDayKey(new Date());
 
     if (hasHourly) {
-      for (const row of hourlyAll) {
+      for (const row of scopedHourly) {
         if (!activeClients.has(row.client)) continue;
         const day = row.hour.slice(0, 10);
         if (!isPlausibleDayKey(day)) continue;
@@ -1125,7 +1357,7 @@ export default function App() {
       const prevFrom = rangeStart - win;
       const prevTo = rangeStart;
       if (hasHourly) {
-        for (const row of hourlyAll) {
+        for (const row of scopedHourly) {
           if (!activeClients.has(row.client)) continue;
           const day = row.hour.slice(0, 10);
           if (!isPlausibleDayKey(day)) continue;
@@ -1147,17 +1379,26 @@ export default function App() {
       vsPrev = pctChange(tokens, prevTokens);
     }
 
+    const estCacheBar = totals.estCacheReadTokens || 0;
+    const heroInput = uncachedInputOf({
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      reasoningTokens: totals.reasoningTokens,
+      totalTokens: totals.totalTokens,
+      estCacheReadTokens: estCacheBar || undefined,
+    });
     const compTotal =
-      totals.inputTokens +
+      heroInput +
       totals.outputTokens +
       totals.cacheReadTokens +
+      estCacheBar +
       totals.cacheWriteTokens +
       totals.reasoningTokens;
     // 构成条用 iOS 系统色（深浅主题都可读），避开工具色
     const composition = [
-      { key: "Input", tokens: totals.inputTokens, color: "#0a84ff" },
+      { key: "Input", tokens: heroInput, color: "#0a84ff" },
       { key: "Output", tokens: totals.outputTokens, color: "#ff9f0a" },
-      { key: "Cache R", tokens: totals.cacheReadTokens, color: "#30d158" },
+      { key: "Cache R", tokens: totals.cacheReadTokens + estCacheBar, color: "#30d158" },
       { key: "Cache W", tokens: totals.cacheWriteTokens, color: "#64d2ff" },
       { key: "Reason", tokens: totals.reasoningTokens, color: "#bf5af2" },
     ].filter((c) => c.tokens > 0);
@@ -1187,7 +1428,7 @@ export default function App() {
         output: 0,
       }));
       if (hasHourly) {
-        for (const row of hourlyAll) {
+        for (const row of scopedHourly) {
           if (!activeClients.has(row.client)) continue;
           if (!row.hour.startsWith(todayKey)) continue;
           const hh = Number(row.hour.slice(11, 13));
@@ -1239,7 +1480,7 @@ export default function App() {
       // 日级 input/output：优先小时桶
       const dayIo = new Map<string, { input: number; output: number }>();
       if (hasHourly) {
-        for (const row of hourlyAll) {
+        for (const row of scopedHourly) {
           if (!activeClients.has(row.client)) continue;
           const day = row.hour.slice(0, 10);
           if (!isPlausibleDayKey(day)) continue;
@@ -1344,7 +1585,7 @@ export default function App() {
     };
   }, [
     hasHourly,
-    hourlyAll,
+    scopedHourly,
     activeClients,
     range,
     rangeStart,
@@ -1425,6 +1666,10 @@ export default function App() {
         r.cacheReadTokens = p.cacheReadTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
         map.set(key, r);
@@ -1439,6 +1684,7 @@ export default function App() {
         }
         r.sessions += 1;
         if (s.usageSource === "lifetime-fallback") r.fallbackSessions += 1;
+        addHitFields(r, s);
       }
     } else {
       for (const s of aggSessions) {
@@ -1457,10 +1703,10 @@ export default function App() {
 
   const projectRows = useMemo(() => {
     const map = new Map<string, AggRow>();
-    if (hourlyAll.length > 0) {
+    if (scopedHourly.length > 0) {
       const todayKey = localDayKey(new Date());
       const byCwd = buildProjectTokensFromHourly(
-        hourlyAll,
+        scopedHourly,
         sessionsAll,
         rangeStart,
         todayKey,
@@ -1491,6 +1737,7 @@ export default function App() {
             hasCost = true;
           }
           reqs += s.requestCount || 0;
+          addHitFields(r, s);
         }
         r.cost = cost;
         r.hasCost = hasCost;
@@ -1514,7 +1761,7 @@ export default function App() {
     return [...map.values()].sort((a, b) => b.totalTokens - a.totalTokens);
   }, [
     aggSessions,
-    hourlyAll,
+    scopedHourly,
     sessionsAll,
     rangeStart,
     activeClients,
@@ -1532,27 +1779,33 @@ export default function App() {
         r.cacheReadTokens = p.cacheReadTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
         r.sessions = hourlyDims.sessionsByModel?.get(key) || 0;
         map.set(key, r);
       }
       for (const s of aggSessions) {
-        if (s.usageSource !== "lifetime-fallback") continue;
-        const key = s.model || UNKNOWN_MODEL;
+        const key = modelAggKey(s.model) || s.model || UNKNOWN_MODEL;
         let r = map.get(key);
         if (!r) {
           r = blankAgg(key);
           map.set(key, r);
-          addToAgg(r, s, currency, fx.rate);
-          r.sessions = 0;
         }
+        if (s.usageSource !== "lifetime-fallback") {
+          addHitFields(r, s);
+          continue;
+        }
+        addToAgg(r, s, currency, fx.rate);
         r.sessions += 1;
         r.fallbackSessions += 1;
       }
     } else {
       for (const s of aggSessions) {
-        const key = s.model || UNKNOWN_MODEL;
+        const key = modelAggKey(s.model) || s.model || UNKNOWN_MODEL;
         let r = map.get(key);
         if (!r) {
           r = blankAgg(key);
@@ -1566,11 +1819,11 @@ export default function App() {
 
   const dailyRows = useMemo(() => {
     const map = new Map<string, AggRow>();
-    if (hourlyAll.length > 0) {
+    if (scopedHourly.length > 0) {
       const dims =
         hourlyDims ||
         buildHourlyDimTotals(
-          hourlyAll,
+          scopedHourly,
           rangeStart,
           localDayKey(new Date()),
           activeClients,
@@ -1584,10 +1837,18 @@ export default function App() {
         r.cacheReadTokens = p.cacheReadTokens;
         r.totalTokens = p.totalTokens;
         r.requestCount = p.events || 0;
+        r.genMs = p.genMs || 0;
+        r.genTokens = p.genTokens || 0;
+        r.estGenMs = p.estGenMs || 0;
+        r.estGenTokens = p.estGenTokens || 0;
         r.cost = p.cost;
         r.hasCost = p.cost > 0;
-        const onDay = buildSessionUsageOnDay(hourlyAll, day, activeClients);
+        const onDay = buildSessionUsageOnDay(scopedHourly, day, activeClients);
         r.sessions = onDay.size;
+        for (const s of aggSessions) {
+          if ((sessionDate(s) ? dayKey(sessionDate(s)!) : "无日期") !== day) continue;
+          addHitFields(r, s);
+        }
         map.set(day, r);
       }
     } else {
@@ -1609,7 +1870,7 @@ export default function App() {
     });
   }, [
     aggSessions,
-    hourlyAll,
+    scopedHourly,
     hourlyDims,
     rangeStart,
     activeClients,
@@ -1625,9 +1886,9 @@ export default function App() {
     lifetimeTotalTokens?: number;
   })[] {
     // 按天：只显示该日真实发生
-    if (kind === "day" && key !== "无日期" && hourlyAll.length > 0) {
+    if (kind === "day" && key !== "无日期" && scopedHourly.length > 0) {
       const onDay = buildSessionUsageOnDay(
-        hourlyAll,
+        scopedHourly,
         key,
         activeClients,
         (row) => hourlyBucketCost(row, currency, fx.rate)
@@ -1659,7 +1920,7 @@ export default function App() {
           case "client":
             return s.client === key;
           case "model":
-            return (s.model || UNKNOWN_MODEL) === key;
+            return (modelAggKey(s.model) || s.model || UNKNOWN_MODEL) === key;
           case "project":
             return (s.cwd || "未知目录") === key || (key === "未归属项目" && !s.cwd);
           case "day": {
@@ -1697,12 +1958,12 @@ export default function App() {
     const stackKeyOfHourly = (row: HourlyBucket) =>
       byModel
         ? row.model && !isUnknownModel(row.model)
-          ? row.model
+          ? modelAggKey(row.model) || row.model
           : UNKNOWN_MODEL
         : row.client;
 
     const stackKeyOfSession = (s: SessionRecord) =>
-      byModel ? s.model || UNKNOWN_MODEL : s.client;
+      byModel ? modelAggKey(s.model) || s.model || UNKNOWN_MODEL : s.client;
 
     const addTo = (entry: Bucket, stackKey: string, tok: number) => {
       if (tok <= 0) return;
@@ -1722,7 +1983,7 @@ export default function App() {
       }));
       const todayKey = localDayKey(new Date());
       if (hasHourly) {
-        for (const row of hourlyAll) {
+        for (const row of scopedHourly) {
           if (!activeClients.has(row.client)) continue;
           if (!row.hour.startsWith(todayKey)) continue;
           const h = Number(row.hour.slice(11, 13));
@@ -1760,7 +2021,7 @@ export default function App() {
       };
 
       if (hasHourly) {
-        for (const row of hourlyAll) {
+        for (const row of scopedHourly) {
           if (!activeClients.has(row.client)) continue;
           const tok = row.totalTokens || 0;
           if (tok <= 0) continue;
@@ -1905,14 +2166,13 @@ export default function App() {
       firstDay: days[0]?.key,
       lastDay: days[days.length - 1]?.key,
     };
-  }, [filtered, rangeStart, range, hasHourly, hourlyAll, activeClients, trendStack]);
+  }, [filtered, rangeStart, range, hasHourly, scopedHourly, activeClients, trendStack]);
 
   const heatmap = useMemo(() => {
-    const q = query.trim().toLowerCase();
     const byDay = new Map<string, number>();
 
-    if (hasHourly && !q) {
-      for (const row of hourlyAll) {
+    if (hasHourly) {
+      for (const row of scopedHourly) {
         if (!activeClients.has(row.client)) continue;
         const tok = row.totalTokens || 0;
         if (tok <= 0) continue;
@@ -1923,7 +2183,7 @@ export default function App() {
     } else {
       for (const s of sessionsAll) {
         if (!activeClients.has(s.client)) continue;
-        if (q && !matchesSession(s, q, CLIENT_LABELS)) continue;
+        if (query.trim() && !matchesSession(s, query, CLIENT_LABELS)) continue;
         const iso = sessionDate(s);
         if (!iso) continue;
         const k = dayKey(iso);
@@ -1961,7 +2221,7 @@ export default function App() {
       return weeks[i - 1][0].key.slice(5, 7) !== m ? `${Number(m)}月` : "";
     });
     return { weeks, max, monthLabels };
-  }, [sessionsAll, hourlyAll, hasHourly, activeClients, query]);
+  }, [sessionsAll, scopedHourly, hasHourly, activeClients, query, drill]);
 
   const clientStats = useMemo(() => {
     const map = new Map<string, { count: number; tokens: number }>();
@@ -2210,6 +2470,20 @@ export default function App() {
             >
               筛选{filterActiveCount ? ` ${filterActiveCount}` : ""}
             </button>
+            {query.trim() ? (
+              <button
+                type="button"
+                className="f-chip on"
+                onClick={() => setQuery("")}
+              >
+                搜索：{query.trim()} · 清除
+              </button>
+            ) : null}
+            {drill ? (
+              <button type="button" className="f-chip on" onClick={clearDrill}>
+                {drillCaption(drill)} · 清除
+              </button>
+            ) : null}
           </div>
           {showFilters && (
             <div className="filter-panel">
@@ -2269,7 +2543,7 @@ export default function App() {
                 value={query}
                 onChange={setQuery}
                 placeholder="搜索标题 / 路径 / 模型 / 工具…"
-                sessions={sessionsAll.filter(passHideAndClient)}
+                sessions={searchPool}
                 clientLabels={CLIENT_LABELS}
                 onPickSession={(client, sessionId) => {
                   const s = sessionsAll.find(
@@ -2277,7 +2551,7 @@ export default function App() {
                   );
                   if (s) setDetail(s);
                 }}
-                onPickDrill={drillToSessions}
+                onPickDrill={applySearchDrill}
               />
             </div>
           )}
@@ -2894,22 +3168,82 @@ export default function App() {
             <section className="card">
               <div className="card-title">分项</div>
               <div className="metrics">
-                <Metric label="Input" value={formatTokens(totals.inputTokens)} />
+                <Metric
+                  label="Input"
+                  value={formatTokens(
+                    uncachedInputOf({
+                      inputTokens: totals.inputTokens,
+                      outputTokens: totals.outputTokens,
+                      reasoningTokens: totals.reasoningTokens,
+                      totalTokens: totals.totalTokens,
+                      estCacheReadTokens: totals.estCacheReadTokens,
+                    })
+                  )}
+                />
                 <Metric label="Output" value={formatTokens(totals.outputTokens)} />
-                <Metric label="Cache R" value={formatTokens(totals.cacheReadTokens)} />
-                <Metric label="Cache W" value={formatTokens(totals.cacheWriteTokens)} />
-                <Metric label="Reason" value={formatTokens(totals.reasoningTokens)} />
                 {(() => {
-                  const hit = cacheHitRate(
-                    totals.inputTokens,
-                    totals.cacheReadTokens
+                  const displayedInput = uncachedInputOf({
+                    inputTokens: totals.inputTokens,
+                    outputTokens: totals.outputTokens,
+                    reasoningTokens: totals.reasoningTokens,
+                    totalTokens: totals.totalTokens,
+                    estCacheReadTokens: totals.estCacheReadTokens,
+                  });
+                  const estCacheAmt =
+                    (totals.estCacheReadTokens || 0) > 0
+                      ? totals.estCacheReadTokens || 0
+                      : filteredAgg.reduce(
+                          (a, s) =>
+                            a + (s.noCacheData ? s.estCacheReadTokens || 0 : 0),
+                          0
+                        );
+                  const officialCache = totals.cacheReadTokens || 0;
+                  let hitInput = 0;
+                  let hitCache = 0;
+                  for (const s of filteredAgg) {
+                    if (!s.noCacheData) {
+                      hitInput += s.inputTokens || 0;
+                      hitCache += s.cacheReadTokens || 0;
+                    }
+                  }
+                  const hit = cacheHitRate(hitInput, hitCache);
+                  const overall = overallHitRate(
+                    displayedInput,
+                    officialCache,
+                    estCacheAmt
                   );
+                  const cacheParts = cacheReadSplit(officialCache, estCacheAmt);
+                  const hitParts = hitRateSplit(hit, overall);
                   return (
-                    <Metric
-                      label="缓存命中"
-                      value={formatHitRate(hit)}
-                      tone={hitRateTone(hit)}
-                    />
+                    <>
+                      <Metric
+                        label="Cache R"
+                        value={
+                          <SplitMetricValue
+                            primary={cacheParts.primary}
+                            extra={cacheParts.extra}
+                          />
+                        }
+                      />
+                      <Metric
+                        label="Cache W"
+                        value={formatTokens(totals.cacheWriteTokens)}
+                      />
+                      <Metric
+                        label="Reason"
+                        value={formatTokens(totals.reasoningTokens)}
+                      />
+                      <Metric
+                        label="缓存命中"
+                        value={
+                          <SplitMetricValue
+                            primary={hitParts.primary}
+                            extra={hitParts.extra}
+                          />
+                        }
+                        tone={hitRateTone(hit)}
+                      />
+                    </>
                   );
                 })()}
                 <Metric
@@ -2919,6 +3253,13 @@ export default function App() {
                       ? totals.requestCount!.toLocaleString()
                       : "–"
                   }
+                />
+                <Metric
+                  label="速度"
+                  value={formatTokPerSec(
+                    tokensPerSec(totals.genTokens, totals.genMs),
+                    tokensPerSec(totals.estGenTokens, totals.estGenMs)
+                  )}
                 />
                 <Metric
                   label={fx.live ? `汇率${fx.date ? ` · ${fx.date.slice(5)}` : ""}` : "汇率 · 兜底"}
@@ -3183,15 +3524,29 @@ export default function App() {
                         )}
                         <span>in {formatTokens(r.inputTokens)}</span>
                         <span>out {formatTokens(r.outputTokens)}</span>
+                        {(tokensPerSec(r.genTokens, r.genMs) != null ||
+                          tokensPerSec(r.estGenTokens, r.estGenMs) != null) && (
+                          <span>
+                            {formatTokPerSec(
+                              tokensPerSec(r.genTokens, r.genMs),
+                              tokensPerSec(r.estGenTokens, r.estGenMs)
+                            )}
+                          </span>
+                        )}
                         {(() => {
                           const hit = cacheHitRate(
+                            r.hitInputTokens,
+                            r.hitCacheReadTokens
+                          );
+                          const overall = overallHitRate(
                             r.inputTokens,
-                            r.cacheReadTokens
+                            r.cacheReadTokens,
+                            r.estCacheReadTokens
                           );
                           const tone = hitRateTone(hit);
                           return (
                             <span className={`hit-rate hit-${tone}`}>
-                              命中 {formatHitRate(hit)}
+                              命中 {formatHitRate(hit, overall)}
                             </span>
                           );
                         })()}
@@ -3281,6 +3636,15 @@ export default function App() {
                 </button>
               ))}
             </div>
+            {query.trim() && (
+              <button
+                type="button"
+                className="drill-banner"
+                onClick={() => setQuery("")}
+              >
+                搜索：{query.trim()} · 点此清除
+              </button>
+            )}
             {drill && (
               <button type="button" className="drill-banner" onClick={clearDrill}>
                 下钻：{drillCaption(drill)} · 点此清除
@@ -3558,7 +3922,7 @@ function Metric({
   tone,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   tone?: "none" | "low" | "mid" | "high";
 }) {
   return (
@@ -3655,8 +4019,17 @@ function SessionItem({
             </span>
           ) : null}
         </span>
-        <span>in {formatTokens(s.inputTokens || 0)}</span>
+        <span>in {formatTokens(uncachedInputOf(s))}</span>
         <span>out {formatTokens(s.outputTokens || 0)}</span>
+        {(tokensPerSec(s.genTokens, s.genMs) != null ||
+          tokensPerSec(s.estGenTokens, s.estGenMs) != null) && (
+          <span title="生成速度">
+            {formatTokPerSec(
+              tokensPerSec(s.genTokens, s.genMs),
+              tokensPerSec(s.estGenTokens, s.estGenMs)
+            )}
+          </span>
+        )}
         {s.requestCount != null && s.requestCount > 0 && (
           <span title="模型 API 请求次数">
             req {s.requestCount.toLocaleString()}
@@ -3669,11 +4042,16 @@ function SessionItem({
           <span title="消息数">msg {s.messageCount.toLocaleString()}</span>
         )}
         {(() => {
-          const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens);
+          const hit = cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData);
+          const overall = overallHitRate(
+            uncachedInputOf(s),
+            s.cacheReadTokens,
+            s.estCacheReadTokens
+          );
           const tone = hitRateTone(hit);
           return (
             <span className={`hit-rate hit-${tone}`}>
-              命中 {formatHitRate(hit)}
+              命中 {formatHitRate(hit, overall)}
             </span>
           );
         })()}
@@ -3730,12 +4108,24 @@ function SessionDetailSheet({
               }
             />
             <DetailRow
+              label="速度"
+              value={formatTokPerSec(
+                tokensPerSec(s.genTokens, s.genMs),
+                tokensPerSec(s.estGenTokens, s.estGenMs)
+              )}
+            />
+            <DetailRow
               label="缓存命中"
               value={formatHitRate(
-                cacheHitRate(s.inputTokens, s.cacheReadTokens)
+                cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData),
+                overallHitRate(
+                  uncachedInputOf(s),
+                  s.cacheReadTokens,
+                  s.estCacheReadTokens
+                )
               )}
               className={`hit-rate hit-${hitRateTone(
-                cacheHitRate(s.inputTokens, s.cacheReadTokens)
+                cacheHitRate(s.inputTokens, s.cacheReadTokens, s.noCacheData)
               )}`}
             />
             <DetailRow label="路径" value={s.cwd || "–"} mono />
@@ -3762,9 +4152,12 @@ function SessionDetailSheet({
           </div>
           <div className="metrics" style={{ marginTop: 12 }}>
             <Metric label="Total" value={formatTokens(s.totalTokens || 0)} />
-            <Metric label="Input" value={formatTokens(s.inputTokens || 0)} />
+            <Metric label="Input" value={formatTokens(uncachedInputOf(s))} />
             <Metric label="Output" value={formatTokens(s.outputTokens || 0)} />
-            <Metric label="Cache R" value={formatTokens(s.cacheReadTokens || 0)} />
+            <Metric
+              label="Cache R"
+              value={formatCacheRead(s.cacheReadTokens, s.estCacheReadTokens)}
+            />
             <Metric label="Cache W" value={formatTokens(s.cacheWriteTokens || 0)} />
             <Metric label="Reason" value={formatTokens(s.reasoningTokens || 0)} />
           </div>

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { agentPaths } from "../paths.js";
 import { makeSession, splitInclusiveUsage, toIso } from "../types.js";
+import { durationFromRange } from "../speed.js";
 
 export const id = "zcode";
 export const displayName = "ZCode";
@@ -99,9 +100,11 @@ function partsFromMessageTokens(tokens) {
  *
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {Set<string>} needIds session ids still missing token totals
+ * @param {{ add?: Function }} [hourly]
+ * @param {Set<string>} [hourlyFromUsage]
  * @returns {Map<string, {input:number,output:number,reasoning:number,cacheRead:number,cacheWrite:number,model?:string,count:number,cost?:number}>}
  */
-function usageFromMessages(db, needIds) {
+function usageFromMessages(db, needIds, hourly, hourlyFromUsage) {
   /** @type {Map<string, {input:number,output:number,reasoning:number,cacheRead:number,cacheWrite:number,model?:string,count:number,cost:number}>} */
   const usage = new Map();
   if (needIds.size === 0) return usage;
@@ -161,6 +164,27 @@ function usageFromMessages(db, needIds) {
       data.modelID || data.modelId || data.model || data.model_id || undefined;
     if (model) cur.model = String(model);
     usage.set(sid, cur);
+
+    const ts =
+      data.time?.completed ||
+      data.time?.created ||
+      undefined;
+    const durationMs = durationFromRange(data.time?.created, data.time?.completed);
+    if (hourly?.add && ts) {
+      hourly.add(id, ts, {
+        inputTokens: parts.input,
+        outputTokens: parts.output,
+        reasoningTokens: parts.reasoning,
+        cacheReadTokens: parts.cacheRead,
+        cacheWriteTokens: parts.cacheWrite,
+        model: model ? String(model) : undefined,
+        sessionId: sid,
+        requestCount: 1,
+        singleRequest: true,
+        durationMs: durationMs || undefined,
+      });
+      hourlyFromUsage?.add(sid);
+    }
   }
 
   // session_entry runtime/model_selection as model fallback
@@ -276,6 +300,9 @@ export function scan(ctx = {}) {
               model: row.model_id || undefined,
               sessionId: sid,
               requestCount: 1,
+              durationMs:
+                durationFromRange(row.started_at, row.completed_at) ||
+                undefined,
             });
             hourlyFromUsage.add(sid);
           }
@@ -294,7 +321,7 @@ export function scan(ctx = {}) {
         : 0;
       if (!u || total === 0) needFallback.add(sid);
     }
-    const fromMsg = usageFromMessages(db, needFallback);
+    const fromMsg = usageFromMessages(db, needFallback, hourly, hourlyFromUsage);
     for (const [sid, u] of fromMsg) {
       usage.set(sid, u);
     }
@@ -576,6 +603,8 @@ export function getDetail(sessionId) {
           cacheReadTokens: parts.cacheRead,
           cacheWriteTokens: parts.cacheWrite,
           reasoningTokens: parts.reasoning,
+          durationMs:
+            durationFromRange(row.started_at, row.completed_at) || undefined,
         });
         const cur = byModel.get(model) || {
           model,

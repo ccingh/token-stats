@@ -51,10 +51,11 @@ export function stripVariantSuffix(s: string): string {
   return String(s).replace(/\s*·\s*.+$/, "").trim();
 }
 
+/** 去掉路径/版本分隔符。`-` 必须放在字符类末尾，避免被当成区间。 */
+const COMPACT_RE = /[/_.\[\]\s-]+/g;
+
 export function compactKey(s: string): string {
-  return stripVariantSuffix(s)
-    .toLowerCase()
-    .replace(/[/_\-.\[\]\s]+/g, "");
+  return stripVariantSuffix(s).toLowerCase().replace(COMPACT_RE, "");
 }
 
 function pathBasename(cwd?: string): string {
@@ -76,7 +77,7 @@ export function fuzzyScore(
   if (!q) return 0;
   const raw = stripVariantSuffix(String(text)).toLowerCase();
   if (!raw) return 0;
-  const qc = q.replace(/[/_\-.\[\]\s]+/g, "");
+  const qc = q.replace(COMPACT_RE, "");
   const tc = compactKey(text);
   if (!qc) return 0;
 
@@ -87,6 +88,9 @@ export function fuzzyScore(
   if (idx >= 0) return Math.max(1, 80 - Math.min(idx, 40));
   const cidx = tc.indexOf(qc);
   if (cidx >= 0) return Math.max(1, 78 - Math.min(cidx, 40));
+
+  // 短词子序列太松（ae → claude）。至少 2 个压缩字符，且首字母对上。
+  if (qc.length < 2 || tc[0] !== qc[0]) return 0;
 
   let ti = 0;
   let gaps = 0;
@@ -99,6 +103,25 @@ export function fuzzyScore(
     ti = found + 1;
   }
   return Math.max(1, 50 - Math.min(gaps, 40));
+}
+
+/** 给下拉标签画匹配段；找不到连续子串就原样返回。 */
+export function highlightSegments(
+  text: string,
+  query: string
+): { text: string; on: boolean }[] {
+  const raw = String(text ?? "");
+  const q = query.trim();
+  if (!raw || !q) return [{ text: raw, on: false }];
+  const idx = raw.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return [{ text: raw, on: false }];
+  const out: { text: string; on: boolean }[] = [];
+  if (idx > 0) out.push({ text: raw.slice(0, idx), on: false });
+  out.push({ text: raw.slice(idx, idx + q.length), on: true });
+  if (idx + q.length < raw.length) {
+    out.push({ text: raw.slice(idx + q.length), on: false });
+  }
+  return out;
 }
 
 function clientDisplay(
@@ -199,7 +222,11 @@ export function buildSearchSuggestions(
     const sScore = Math.max(
       fuzzyScore(q, s.title),
       fuzzyScore(q, s.sessionId),
-      fuzzyScore(q, s.agentName)
+      fuzzyScore(q, s.agentName),
+      fuzzyScore(q, s.cwd),
+      fuzzyScore(q, pathBasename(s.cwd)),
+      fuzzyScore(q, model),
+      fuzzyScore(q, s.model)
     );
     if (sScore > 0) {
       sessionHits.push({

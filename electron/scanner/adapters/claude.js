@@ -3,6 +3,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
 import { isPlaceholderModel, makeSession, toIso } from "../types.js";
+import { durationFromRange } from "../speed.js";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -156,6 +157,8 @@ async function parseJsonl(file, projectFolder, projectDir, scannedAt, hourly) {
   let messageCount = 0;
   let turnCount = 0;
   let cwd = decodeProjectFolder(projectFolder);
+  /** 上一条事件时间，用来估模型调用墙钟（无官方 duration） */
+  let prevEventTs;
 
   const stream = fs.createReadStream(file, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -205,9 +208,11 @@ async function parseJsonl(file, projectFolder, projectDir, scannedAt, hourly) {
           cacheWriteTokens: cw,
           model: model || undefined,
           sessionId,
+          durationMs: durationFromRange(prevEventTs, obj.timestamp) || undefined,
         });
       }
     }
+    if (obj.timestamp) prevEventTs = obj.timestamp;
   }
 
   const hasTokens = input + output + cacheRead + cacheWrite > 0;

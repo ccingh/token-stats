@@ -8,6 +8,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   buildSearchSuggestions,
+  highlightSegments,
   type SearchDrill,
   type SearchHit,
   type SearchableSession,
@@ -24,6 +25,16 @@ type Props = {
   inputClassName?: string;
 };
 
+function HitLabel({ text, query }: { text: string; query: string }) {
+  return (
+    <>
+      {highlightSegments(text, query).map((seg, i) =>
+        seg.on ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>
+      )}
+    </>
+  );
+}
+
 export default function SearchBox({
   value,
   onChange,
@@ -35,6 +46,7 @@ export default function SearchBox({
   inputClassName = "search",
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 320 });
@@ -76,6 +88,27 @@ export default function SearchBox({
     setActive(0);
   }, [value]);
 
+  useEffect(() => {
+    if (!show) return;
+    const el = menuRef.current?.querySelector(".search-hit.active");
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active, show]);
+
+  useEffect(() => {
+    function onHotkey(e: globalThis.KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "k") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      setOpen(true);
+      placeMenu();
+    }
+    window.addEventListener("keydown", onHotkey);
+    return () => window.removeEventListener("keydown", onHotkey);
+  }, []);
+
   function pick(hit: SearchHit) {
     if (hit.action.type === "drill") {
       onPickDrill(hit.action.drill);
@@ -86,12 +119,21 @@ export default function SearchBox({
     setOpen(false);
   }
 
+  function clear() {
+    onChange("");
+    setOpen(false);
+    inputRef.current?.focus();
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.nativeEvent.isComposing || e.key === "Process") return;
     if (e.key === "Escape") {
+      e.preventDefault();
       if (show) {
-        e.preventDefault();
         setOpen(false);
+        return;
       }
+      if (value) clear();
       return;
     }
     if (!show || flat.length === 0) return;
@@ -115,7 +157,10 @@ export default function SearchBox({
   const menu = show
     ? createPortal(
         <div
+          ref={menuRef}
+          id="token-stats-search-menu"
           className="search-menu"
+          role="listbox"
           style={{
             top: menuPos.top,
             left: menuPos.left,
@@ -127,7 +172,7 @@ export default function SearchBox({
             <div className="search-empty">无匹配</div>
           ) : (
             groups.map((g) => (
-              <div key={g.group} className="search-group">
+              <div key={g.group} className="search-group" role="group" aria-label={g.title}>
                 <div className="search-group-title">{g.title}</div>
                 {g.hits.map((hit) => {
                   const idx = cursor++;
@@ -136,11 +181,15 @@ export default function SearchBox({
                     <button
                       key={hit.id}
                       type="button"
+                      role="option"
+                      aria-selected={on}
                       className={`search-hit${on ? " active" : ""}`}
                       onMouseEnter={() => setActive(idx)}
                       onClick={() => pick(hit)}
                     >
-                      <span className="search-hit-label">{hit.label}</span>
+                      <span className="search-hit-label">
+                        <HitLabel text={hit.label} query={value} />
+                      </span>
                       {hit.hint ? (
                         <span className="search-hit-hint">{hit.hint}</span>
                       ) : null}
@@ -176,7 +225,23 @@ export default function SearchBox({
         onKeyDown={onKeyDown}
         autoComplete="off"
         spellCheck={false}
+        role="combobox"
+        aria-expanded={show}
+        aria-autocomplete="list"
+        aria-controls="token-stats-search-menu"
       />
+      {value ? (
+        <button
+          type="button"
+          className="search-clear"
+          aria-label="清除搜索"
+          title="清除"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={clear}
+        >
+          ×
+        </button>
+      ) : null}
       {menu}
     </div>
   );

@@ -62,5 +62,7 @@ export function agentPaths() {
     dshHome,
     dshSessions: path.join(dshHome, "sessions"),
     dshProjCache: path.join(dshHome, "storages", "session_projcache.json"),
+    // freebuff（Codebuff 系）：~/.config/manicode/projects/<项目>/chats/<时间戳>/
+    freebuffProjects: path.join(home, ".config", "manicode", "projects"),
   };
 }

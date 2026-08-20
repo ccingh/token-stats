@@ -5,6 +5,7 @@ import { agentPaths } from "../paths.js";
 import { makeSession, toIso } from "../types.js";
 import { normalizeAgentName } from "../agentLabel.js";
 import { parseTs } from "../hourly.js";
+import { sanitizeEstGenMs, sanitizeGenMs, toUnixMs } from "../speed.js";
 
 export const id = "grok";
 export const displayName = "Grok Build";
@@ -53,7 +54,7 @@ function findSessionDirs(root) {
 }
 
 /**
- * @typedef {{ input: number, output: number, cacheRead: number, reasoning: number, lastTs?: string, turns: number, requests: number }} UsageAgg
+ * @typedef {{ input: number, output: number, cacheRead: number, reasoning: number, lastTs?: string, turns: number, requests: number, speeds?: Array<{ ts: any, durationMs: number, genTokens: number, model?: string }> }} UsageAgg
  */
 
 /**
@@ -357,17 +358,28 @@ async function loadUnifiedUsage(opts = {}) {
     cur.turns += 1;
     cur.requests += 1; // 每条 inference_done = 1 次模型请求
     if (obj.ts) cur.lastTs = toIso(obj.ts) || cur.lastTs;
+    const durationMs = sanitizeGenMs(ctx.model_elapsed_ms);
+    const genTok = part.output + part.reasoning;
+    const modelHint =
+      normalizeGrokModel(
+        ctx.model ||
+          ctx.model_id ||
+          obj.model ||
+          obj.model_id ||
+          undefined
+      ) ||
+      grokModelAtTime(modelTimelines?.get(sid) || [], obj.ts);
+    if (durationMs && genTok > 0) {
+      cur.speeds = cur.speeds || [];
+      cur.speeds.push({
+        ts: obj.ts,
+        durationMs,
+        genTokens: genTok,
+        model: modelHint != null ? String(modelHint) : undefined,
+      });
+    }
     map.set(sid, cur);
     if (hourly?.add && obj.ts) {
-      const modelHint =
-        normalizeGrokModel(
-          ctx.model ||
-            ctx.model_id ||
-            obj.model ||
-            obj.model_id ||
-            undefined
-        ) ||
-        grokModelAtTime(modelTimelines?.get(sid) || [], obj.ts);
       hourly.add(id, obj.ts, {
         inputTokens: part.input,
         outputTokens: part.output,
@@ -378,6 +390,7 @@ async function loadUnifiedUsage(opts = {}) {
         // 多数 inference_done 无 model；会话扫完后用 summary 保底
         sessionId: sid,
         requestCount: 1,
+        durationMs: durationMs || undefined,
       });
     }
   }
@@ -484,6 +497,81 @@ function findParentViaSubagentsDir(root, childId) {
   };
   walk(root, 0);
   return hit;
+}
+
+/**
+ * events.jsonl：loop_started → 首次 tool_started（或 turn_ended）≈ 该次生成墙钟。
+ * 不是官方 model_elapsed_ms，只给 UI 写成 –（xx/s）。
+ * @param {string} [sessionDir]
+ */
+async function loadGrokLoopEstimates(sessionDir) {
+  /** @type {{ ts: any, durationMs: number }[]} */
+  const out = [];
+  if (!sessionDir) return out;
+  const evPath = path.join(sessionDir, "events.jsonl");
+  if (!fs.existsSync(evPath)) return out;
+
+  let acc = 0;
+  let loopStart = null;
+  let loopTool = null;
+  const flushLoop = (endTs) => {
+    if (!loopStart) return;
+    const end = loopTool || endTs;
+    const d = sanitizeEstGenMs(toUnixMs(end) - toUnixMs(loopStart));
+    if (d) acc += d;
+    loopStart = null;
+    loopTool = null;
+  };
+
+  const stream = fs.createReadStream(evPath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of rl) {
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const t = obj.type;
+    const ts = obj.ts || obj.timestamp;
+    if (!ts) continue;
+    if (t === "loop_started") {
+      flushLoop(ts);
+      loopStart = ts;
+    } else if (t === "tool_started" && loopStart && !loopTool) {
+      loopTool = ts;
+    } else if (t === "turn_ended") {
+      flushLoop(ts);
+      if (acc > 0) out.push({ ts, durationMs: acc });
+      acc = 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {{ ts: any, durationMs: number }[]} estimates
+ * @param {any} ts
+ * @param {Set<number>} used
+ */
+function takeNearestEst(estimates, ts, used) {
+  const t = toUnixMs(ts);
+  if (!t) return undefined;
+  let best = -1;
+  let bestDt = Infinity;
+  for (let i = 0; i < estimates.length; i++) {
+    if (used.has(i)) continue;
+    const et = toUnixMs(estimates[i].ts);
+    if (!et) continue;
+    const dt = Math.abs(et - t);
+    if (dt < bestDt && dt < 180_000) {
+      bestDt = dt;
+      best = i;
+    }
+  }
+  if (best < 0) return undefined;
+  used.add(best);
+  return estimates[best].durationMs;
 }
 
 /**
@@ -644,8 +732,21 @@ export async function scan(ctx = {}) {
     for (const sid of preferUpdates) {
       const evs = eventsBySid.get(sid);
       if (!evs?.length) continue;
+      const speeds = usageBySid.get(sid)?.speeds;
+      const estimates =
+        !speeds?.length
+          ? await loadGrokLoopEstimates(dirBySid.get(sid))
+          : [];
+      const usedEst = new Set();
+      let lastEvTs = null;
       for (const ev of evs) {
         if (!ev.ts) continue;
+        const sameTs = lastEvTs != null && String(ev.ts) === String(lastEvTs);
+        lastEvTs = ev.ts;
+        const estDurationMs =
+          !sameTs && estimates.length
+            ? takeNearestEst(estimates, ev.ts, usedEst)
+            : undefined;
         hourly.add(id, ev.ts, {
           inputTokens: ev.input,
           outputTokens: ev.output,
@@ -655,7 +756,20 @@ export async function scan(ctx = {}) {
           model: ev.model,
           sessionId: sid,
           requestCount: ev.requests,
+          estDurationMs,
         });
+      }
+      if (speeds?.length) {
+        for (const sp of speeds) {
+          if (!sp.ts || !sp.durationMs) continue;
+          hourly.add(id, sp.ts, {
+            speedOnly: true,
+            durationMs: sp.durationMs,
+            genTokens: sp.genTokens,
+            model: sp.model || grokModelAtTime(evs, sp.ts),
+            sessionId: sid,
+          });
+        }
       }
     }
   }

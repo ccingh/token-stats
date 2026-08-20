@@ -93,7 +93,31 @@ const PRICES = {
     cacheRead: 0.15,
   },
   "kimi-k1.5": { input: 0.6, output: 2.5 },
+  // Kimi Code Model ID（www.kimi.com/code/docs）：
+  //   k3 / k3-256k / kimi-for-coding / kimi-for-coding-highspeed
+  // 登录后前缀 kimi-code/（kimi-code/k3-256k）；旧 API key 是 kimi-for-coding/
+  // 统计时剥前缀。kimi-for-coding 单独出现才是 K2.7 Code，不是 K3。
+  "kimi-for-coding-highspeed": {
+    input: 1.9,
+    output: 8,
+    cacheRead: 0.38,
+    cny: { input: 13, output: 54, cacheRead: 2.6 },
+  },
   "kimi-for-coding": {
+    input: 0.95,
+    output: 4,
+    cacheRead: 0.19,
+    cny: { input: 6.5, output: 27, cacheRead: 1.3 },
+  },
+  // k3-256k：K3 的 256k 上下文 SKU。文档「k3(1M) 消耗约为两倍」指更长
+  // 上下文带来的 token 量，开放平台刊例与 kimi-k3 同价，不按单价减半。
+  "kimi-k3-256k": {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cny: { input: 20, output: 100, cacheRead: 2 },
+  },
+  "k3-256k": {
     input: 3,
     output: 15,
     cacheRead: 0.3,
@@ -148,6 +172,15 @@ const PRICES = {
     output: 4.4,
     cacheRead: 0.26,
     cny: { input: 8, output: 28, cacheRead: 2 },
+    // 官方按量页尚未单列 5.3 阶梯；Coding Plan 把 5.2 路由到 5.3，先套 5.2 长档
+    tiers: [
+      { upTo: 32000, input: 1.4, output: 4.4, cacheRead: 0.26 },
+      { upTo: Infinity, input: 1.8, output: 5.2, cacheRead: 0.32 },
+    ],
+    cnyTiers: [
+      { upTo: 32000, input: 8, output: 28, cacheRead: 2 },
+      { upTo: Infinity, input: 10, output: 36, cacheRead: 2.5 },
+    ],
   },
   "glm-5-turbo": {
     input: 1.2,
@@ -439,11 +472,22 @@ function mergedKeys() {
 /**
  * OpenCode / 供应商短 id → 价目表 key（contains 匹配用）
  * 例：session.model = {"id":"k3","providerID":"kimi-for-coding"} → 展示名 k3
+ * Kimi Code 登录前缀 `kimi-code/`、旧前缀 `kimi-for-coding/` 在 findPrice / modelAggKey 里剥掉，
+ * 这里仍保留带前缀的别名，兼容未剥离的旧持久化记录。
  */
 const MODEL_ALIASES = {
   "grok 4.6": "grok-4.6",
   k3: "kimi-k3",
+  "k3-256k": "kimi-k3-256k",
+  "k3[1m]": "kimi-k3",
   "kimi-for-coding/k3": "kimi-k3",
+  "kimi-for-coding/k3-256k": "kimi-k3-256k",
+  "kimi-code/k3": "kimi-k3",
+  "kimi-code/k3-256k": "kimi-k3-256k",
+  "kimi-for-coding/kimi-for-coding": "kimi-for-coding",
+  "kimi-for-coding/kimi-for-coding-highspeed": "kimi-for-coding-highspeed",
+  "kimi-code/kimi-for-coding": "kimi-for-coding",
+  "kimi-code/kimi-for-coding-highspeed": "kimi-for-coding-highspeed",
   k2p7: "kimi-k2.7-code",
   k2p6: "kimi-k2.6",
   k2p5: "kimi-k2.5",
@@ -462,7 +506,16 @@ export function applyPriceOverrides(overrides) {
   if (!overrides) return;
   const models = overrides.models || {};
   for (const [k, v] of Object.entries(models)) {
-    if (v && typeof v === "object") extraPrices[k] = v;
+    if (!v || typeof v !== "object") continue;
+    const base = PRICES[k] || {};
+    // 用户只改单价时保留内置阶梯 / 官方 CNY，避免覆盖把长档抹掉
+    extraPrices[k] = {
+      ...base,
+      ...v,
+      cny: v.cny != null ? v.cny : base.cny,
+      tiers: v.tiers != null ? v.tiers : base.tiers,
+      cnyTiers: v.cnyTiers != null ? v.cnyTiers : base.cnyTiers,
+    };
   }
   const aliases = overrides.aliases || {};
   for (const [k, v] of Object.entries(aliases)) {
@@ -540,13 +593,14 @@ export function isFreeTierModel(model) {
 
 /**
  * 扫描结果里查不到价的模型（已去档位后缀）。
- * @param {Array<{ model?: string, totalTokens?: number }>} sessions
+ * @param {Array<{ client?: string, model?: string, totalTokens?: number }>} sessions
  * @returns {Array<{ model: string, sessions: number, totalTokens: number }>}
  */
 export function collectUnpricedModels(sessions) {
   /** @type {Map<string, { model: string, sessions: number, totalTokens: number }>} */
   const map = new Map();
   for (const s of sessions || []) {
+    if (String(s.client || "").toLowerCase() === "freebuff") continue;
     const key = modelAggKey(s.model) || (s.model ? String(s.model).trim() : "");
     if (!key || UNKNOWN_MODEL_RE.test(key)) continue;
     if (findPrice(key)) continue;
@@ -573,6 +627,12 @@ export function findPrice(model) {
   let m = String(agg || model).toLowerCase().trim();
   // 展示名带档位：deepseek-v4-pro · max → 先按主名匹配
   m = m.replace(/\s*·\s*.+$/, "").trim();
+  // 登录 kimi-code/k3-256k、旧路径 kimi-for-coding/k3 → 剥前缀再匹配
+  const kimiPref = m.match(/^(kimi-code|kimi-for-coding)\//);
+  if (kimiPref) {
+    const tail = m.slice(kimiPref[0].length).trim();
+    if (tail) m = tail;
+  }
   if (aliasMap[m]) m = aliasMap[m];
   // provider/id 或 id 末段
   if (m.includes("/")) {
@@ -685,6 +745,7 @@ export function isLongContextPrompt(model, promptTokens) {
  * 单次请求且模型有 tiers 时按 prompt 选档；否则用基础档。
  * usd 按美元价目；cny 仅当配置了官方人民币价时直接算，否则 null（上层按汇率折算）。
  * @param {{
+ *   client?: string,
  *   model?: string,
  *   inputTokens: number,
  *   outputTokens: number,
@@ -700,6 +761,9 @@ export function isLongContextPrompt(model, promptTokens) {
  * @returns {{ usd: number | null, cny: number | null }}
  */
 export function estimateCost(s) {
+  if (String(s?.client || "").toLowerCase() === "freebuff") {
+    return { usd: 0, cny: 0 };
+  }
   const p = findPrice(s.model);
   if (!p) return { usd: null, cny: null };
 

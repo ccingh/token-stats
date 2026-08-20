@@ -14,6 +14,7 @@ import * as grok from "./adapters/grok.js";
 import * as mimocode from "./adapters/mimocode.js";
 import * as codex from "./adapters/codex.js";
 import * as dsh from "./adapters/dsh.js";
+import * as freebuff from "./adapters/freebuff.js";
 import { agentPaths } from "./paths.js";
 import { toIso } from "./types.js";
 import { normalizeAgentName } from "./agentLabel.js";
@@ -473,6 +474,9 @@ async function mergeChildTurnDetails(detail, client, children) {
         case "dsh":
           childDetail = dsh.getDetail(childId);
           break;
+        case "freebuff":
+          childDetail = await freebuff.getDetail(childId);
+          break;
         case "kimi":
           // kimi 子 agent 在同一 session 目录的 wire 里，不单独 merge
           childDetail = null;
@@ -621,6 +625,9 @@ export async function getSessionDetail(opts) {
       break;
     case "dsh":
       detail = dsh.getDetail(sessionId);
+      break;
+    case "freebuff":
+      detail = await freebuff.getDetail(sessionId);
       break;
     default:
       throw new Error(`未知客户端：${client}`);

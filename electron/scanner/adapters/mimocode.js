@@ -11,6 +11,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { agentPaths } from "../paths.js";
 import { normalizeAgentName } from "../agentLabel.js";
+import { durationFromRange } from "../speed.js";
 import {
   makeSession,
   normalizeModelName,
@@ -235,6 +236,10 @@ export function scan(ctx = {}) {
         row.time_updated ||
         row.time_created;
       if (ts && hourly?.add) {
+        const durationMs = durationFromRange(
+          data.time?.created,
+          data.time?.completed
+        );
         hourly.add(id, ts, {
           inputTokens: parts.input,
           outputTokens: parts.output,
@@ -244,6 +249,7 @@ export function scan(ctx = {}) {
           model,
           sessionId: sid,
           requestCount: 1,
+          durationMs: durationMs || undefined,
         });
       }
     }
@@ -378,6 +384,9 @@ export function getDetail(sessionId) {
         cacheReadTokens: parts.cacheRead,
         cacheWriteTokens: parts.cacheWrite,
         reasoningTokens: parts.reasoning,
+        durationMs:
+          durationFromRange(data.time?.created, data.time?.completed) ||
+          undefined,
       });
 
       const cur = byModel.get(model) || {

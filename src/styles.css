@@ -22,6 +22,7 @@
   --c-mimocode: #ff6a3d;
   --c-codex: #2e8cff;
   --c-dsh: #4d6bfe;
+  --c-freebuff: #34d399;
   --radius: 10px;
   /* Electron titleBarOverlay：系统最小化/最大化/关闭占位（与 main.cjs height:40 对齐） */
   --win-titlebar-h: env(titlebar-area-height, 40px);
@@ -1007,10 +1008,32 @@ button.brand-home.on-home .brand-mark {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 7px 12px;
+  padding: 7px 28px 7px 12px;
   font-size: 12.5px;
   color: var(--text);
   transition: border-color 0.12s ease;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.search-clear:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .search-menu {
@@ -1059,6 +1082,13 @@ button.brand-home.on-home .brand-mark {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.search-hit-label mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 650;
+  padding: 0;
 }
 
 .search-hit-hint {
@@ -1210,7 +1240,7 @@ th.sortable:hover {
 .hero-metrics {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 10px 8px;
   align-content: center;
   align-items: start;
@@ -1238,6 +1268,18 @@ th.sortable:hover {
   font-weight: 600;
   margin-top: 2px;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.metric .metric-est {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  margin-top: 2px;
+  color: var(--muted);
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
@@ -1535,6 +1577,9 @@ th.sortable:hover {
 }
 .client-dsh {
   background: var(--c-dsh, #4d6bfe);
+}
+.client-freebuff {
+  background: var(--c-freebuff);
 }
 
 .chip-row {
@@ -1881,6 +1926,14 @@ tbody tr:hover td {
 
 .metric.hit-tone-high .value {
   color: #a8c096;
+}
+
+.metric.hit-tone-low .metric-est,
+.metric.hit-tone-mid .metric-est,
+.metric.hit-tone-high .metric-est,
+.hit-rate .metric-est {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .num {

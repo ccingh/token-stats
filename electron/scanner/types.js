@@ -39,6 +39,12 @@
  * @property {boolean} [dedupExcluded] 跨工具去重：本条被排除，不计入总额（标记而非删除）
  * @property {string} [dedupReason] 去重原因，如 "duplicate_session_id:<胜出client>"
  * @property {string} [dedupKeptBy] "client:sessionId"，指向保留的那条（便于跳转）
+ * @property {boolean} [noCacheData] 本地无 cache 官方记录（如 freebuff）：命中率统计应排除
+ * @property {number} [estCacheReadTokens] 仅展示用的估算 cache（不得计入 cacheRead / 官方命中率；计入 total）
+ * @property {number} [genMs] 有耗时记录的模型请求墙钟合计（ms，含 TTFT）
+ * @property {number} [genTokens] 与 genMs 配对的 output+reasoning
+ * @property {number} [estGenMs] 非官方估算耗时（不进汇总 tok/s）
+ * @property {number} [estGenTokens] 与 estGenMs 配对的生成量
  */
 
 /**
@@ -85,12 +91,14 @@ export function splitInclusiveUsage(raw) {
 /**
  * 会话处理过的 token 总量（各分量互不重叠时直接相加）。
  * 兼容尚未 split 的旧数据：若 cache ≤ input 视为子集，不再计入 total。
+ * estCacheReadTokens 与 cacheRead 互斥（官方 cache 为 0 时的展示估算），要加进总量。
  * @param {{
  *   inputTokens?: number,
  *   outputTokens?: number,
  *   cacheReadTokens?: number,
  *   cacheWriteTokens?: number,
  *   reasoningTokens?: number,
+ *   estCacheReadTokens?: number,
  * }} s
  * @returns {number}
  */
@@ -100,11 +108,12 @@ export function computeTotalTokens(s) {
   const cacheRead = num(s.cacheReadTokens);
   const cacheWrite = num(s.cacheWriteTokens);
   const reasoning = num(s.reasoningTokens);
+  const estCache = num(s.estCacheReadTokens);
 
   const cachePart = cacheRead > 0 && cacheRead <= input ? 0 : cacheRead;
   const reasonPart = reasoning > 0 && reasoning <= output ? 0 : reasoning;
 
-  return input + output + cachePart + cacheWrite + reasonPart;
+  return input + output + cachePart + cacheWrite + reasonPart + estCache;
 }
 
 /**
@@ -234,11 +243,26 @@ export function isPlaceholderModel(raw) {
 }
 
 /**
+ * Kimi Code 供应商前缀：登录是 `kimi-code/`，旧 API key 路径是 `kimi-for-coding/`。
+ * 尾巴才是文档里的 Model ID（k3 / k3-256k / kimi-for-coding / …）。
+ * 单独的 `kimi-for-coding`（没有斜杠）是 K2.7 Code，不能剥。
+ * @param {string} id
+ */
+function stripKimiProviderPrefix(id) {
+  const s = String(id || "").trim();
+  if (!s) return s;
+  const m = s.match(/^(kimi-code|kimi-for-coding)\//i);
+  if (!m) return s;
+  const tail = s.slice(m[0].length).trim();
+  return tail || s;
+}
+
+/**
  * @param {string} id
  */
 function cleanModelId(id) {
   if (isPlaceholderModel(id)) return undefined;
-  const clean = String(id || "")
+  const clean = stripKimiProviderPrefix(String(id || ""))
     .replace(/-build$/, "")
     .trim();
   return clean || undefined;
@@ -254,12 +278,17 @@ export function makeSession(partial) {
   const cacheReadTokens = num(partial.cacheReadTokens);
   const cacheWriteTokens = num(partial.cacheWriteTokens);
   const reasoningTokens = num(partial.reasoningTokens);
+  const estCacheReadTokens =
+    partial.estCacheReadTokens != null && Number(partial.estCacheReadTokens) > 0
+      ? num(partial.estCacheReadTokens)
+      : 0;
   const totalTokens = computeTotalTokens({
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
     reasoningTokens,
+    estCacheReadTokens,
   });
 
   /** @type {Quality} */
@@ -321,6 +350,25 @@ export function makeSession(partial) {
     dedupExcluded: partial.dedupExcluded ? true : undefined,
     dedupReason: partial.dedupReason || undefined,
     dedupKeptBy: partial.dedupKeptBy || undefined,
+    // 本地无 cache 官方记录（freebuff）：命中率统计排除
+    noCacheData: partial.noCacheData ? true : undefined,
+    estCacheReadTokens: estCacheReadTokens > 0 ? estCacheReadTokens : undefined,
+    genMs:
+      partial.genMs != null && Number(partial.genMs) > 0
+        ? num(partial.genMs)
+        : undefined,
+    genTokens:
+      partial.genTokens != null && Number(partial.genTokens) > 0
+        ? num(partial.genTokens)
+        : undefined,
+    estGenMs:
+      partial.estGenMs != null && Number(partial.estGenMs) > 0
+        ? num(partial.estGenMs)
+        : undefined,
+    estGenTokens:
+      partial.estGenTokens != null && Number(partial.estGenTokens) > 0
+        ? num(partial.estGenTokens)
+        : undefined,
   };
 }
 
@@ -355,6 +403,18 @@ export function mergeChildSessions(sessions) {
     parent.outputTokens += child.outputTokens;
     parent.cacheReadTokens += child.cacheReadTokens;
     parent.cacheWriteTokens += child.cacheWriteTokens;
+    if (child.estCacheReadTokens || parent.estCacheReadTokens) {
+      parent.estCacheReadTokens =
+        (parent.estCacheReadTokens || 0) + (child.estCacheReadTokens || 0);
+    }
+    if (child.genMs || parent.genMs) {
+      parent.genMs = (parent.genMs || 0) + (child.genMs || 0);
+      parent.genTokens = (parent.genTokens || 0) + (child.genTokens || 0);
+    }
+    if (child.estGenMs || parent.estGenMs) {
+      parent.estGenMs = (parent.estGenMs || 0) + (child.estGenMs || 0);
+      parent.estGenTokens = (parent.estGenTokens || 0) + (child.estGenTokens || 0);
+    }
     parent.reasoningTokens += child.reasoningTokens;
     parent.totalTokens = computeTotalTokens(parent);
     parent.messageCount = (parent.messageCount || 0) + (child.messageCount || 0);

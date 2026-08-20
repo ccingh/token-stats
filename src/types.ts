@@ -48,6 +48,17 @@ export interface SessionRecord {
   dedupReason?: string;
   /** "client:sessionId"，指向保留的那条（便于跳转） */
   dedupKeptBy?: string;
+  /** 本地无 cache 官方记录（如 freebuff）：命中率统计应排除 */
+  noCacheData?: boolean;
+  /** 仅展示用的估算 cache，不计入 cacheRead / 官方命中率（计入 total） */
+  estCacheReadTokens?: number;
+  /** 有耗时记录的模型请求墙钟合计（ms，含 TTFT） */
+  genMs?: number;
+  /** 与 genMs 配对的 output+reasoning */
+  genTokens?: number;
+  /** 非官方估算耗时，不进汇总 tok/s */
+  estGenMs?: number;
+  estGenTokens?: number;
 }
 
 /** 跨工具去重报告（扫描详情展示用） */
@@ -73,6 +84,12 @@ export interface TurnDetail {
   cacheWriteTokens: number;
   reasoningTokens: number;
   loopIndex?: number;
+  /** 这一次模型调用墙钟（ms，含 TTFT） */
+  durationMs?: number;
+  /** 非官方估算耗时（不进汇总 tok/s） */
+  estDurationMs?: number;
+  /** 仅展示用估算 cache（freebuff），不计入 cacheRead */
+  estCacheReadTokens?: number;
   /** 来自子 agent / 子会话 */
   isSubagent?: boolean;
   /** 子 agent 名（explore / general 等） */
@@ -89,6 +106,8 @@ export interface ModelTrace {
   cacheRead?: number;
   cacheWrite?: number;
   reasoning?: number;
+  /** 仅展示用估算 cache */
+  estCache?: number;
 }
 
 /** 按 agent 角色汇总（plan / build / explore 等） */
@@ -100,6 +119,7 @@ export interface AgentTrace {
   cacheRead?: number;
   cacheWrite?: number;
   reasoning?: number;
+  estCache?: number;
   isSubagent?: boolean;
 }
 
@@ -214,6 +234,14 @@ export interface HourlyBucket {
   costCny?: number;
   /** 本桶内命中长上下文档的请求数 */
   longContextEvents?: number;
+  /** 有耗时记录的模型请求墙钟合计（ms） */
+  genMs?: number;
+  /** 与 genMs 配对的 output+reasoning */
+  genTokens?: number;
+  estGenMs?: number;
+  estGenTokens?: number;
+  /** 仅展示用估算 cache（freebuff），不计入 cacheRead */
+  estCacheReadTokens?: number;
 }
 
 /** 展示用量来源：时间窗可拆 / 会话全量（兼容）/ 无法拆分时的全量兜底 */
@@ -273,6 +301,19 @@ export interface ScanResult {
   persistedCount?: number;
 }
 
+/** Kimi Code：登录 `kimi-code/`，旧 API `kimi-for-coding/`。无斜杠的 kimi-for-coding 是 K2.7，不剥。 */
+function cleanModelBase(id: string): string {
+  let s = String(id || "")
+    .replace(/-build$/, "")
+    .trim();
+  const m = s.match(/^(kimi-code|kimi-for-coding)\//i);
+  if (m) {
+    const tail = s.slice(m[0].length).trim();
+    if (tail) s = tail;
+  }
+  return s;
+}
+
 /** 思考档位规范化 */
 export function normalizeModelVariant(v?: string | null): string | undefined {
   if (v == null) return undefined;
@@ -310,7 +351,7 @@ export function splitModelParts(raw?: string | null): {
           (typeof o.model === "string" ? o.model : undefined);
         if (id != null && String(id).trim()) {
           return {
-            base: String(id).replace(/-build$/, "").trim(),
+            base: cleanModelBase(String(id)),
             variant: normalizeModelVariant(
               o.variant != null ? String(o.variant) : undefined
             ),
@@ -325,7 +366,7 @@ export function splitModelParts(raw?: string | null): {
       if (idM) {
         const vM = s.match(/"variant"\s*:\s*"([^"]+)"/i);
         return {
-          base: idM[1].replace(/-build$/, ""),
+          base: cleanModelBase(idM[1]),
           variant: normalizeModelVariant(vM?.[1]),
         };
       }
@@ -335,11 +376,11 @@ export function splitModelParts(raw?: string | null): {
   const dot = s.indexOf("·");
   if (dot >= 0) {
     return {
-      base: s.slice(0, dot).replace(/-build$/, "").trim(),
+      base: cleanModelBase(s.slice(0, dot)),
       variant: normalizeModelVariant(s.slice(dot + 1)),
     };
   }
-  return { base: s.replace(/-build$/, "").trim() };
+  return { base: cleanModelBase(s) };
 }
 
 /** 统计用模型键：仅主名 */
@@ -379,4 +420,32 @@ export function sanitizeScanResult(data: ScanResult): ScanResult {
       return base && base !== h.model ? { ...h, model: base } : h;
     }),
   };
+}
+
+/** 加权 tok/s：只除有耗时记录的生成量。 */
+export function tokensPerSec(
+  genTokens?: number | null,
+  genMs?: number | null
+): number | null {
+  const t = Number(genTokens) || 0;
+  const ms = Number(genMs) || 0;
+  if (t <= 0 || ms < 50) return null;
+  return t / (ms / 1000);
+}
+
+function formatSpeedNumber(n: number): string {
+  if (n >= 100) return `${Math.round(n)}/s`;
+  if (n >= 10) return `${n.toFixed(1)}/s`;
+  return `${n.toFixed(2)}/s`;
+}
+
+export function formatTokPerSec(
+  n: number | null | undefined,
+  est?: number | null
+): string {
+  if (n != null && Number.isFinite(n) && n > 0) return formatSpeedNumber(n);
+  if (est != null && Number.isFinite(est) && est > 0) {
+    return `–（${formatSpeedNumber(est)}）`;
+  }
+  return "–";
 }

@@ -159,7 +159,7 @@ button {
 .field input,
 .search {
   width: 100%;
-  padding: 12px 14px;
+  padding: 12px 36px 12px 14px;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -174,8 +174,31 @@ button {
 }
 
 .search-wrap {
+  position: relative;
   width: 100%;
   margin-left: 0;
+}
+
+.search-clear {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.search-clear:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .search-menu {
@@ -224,6 +247,13 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.search-hit-label mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 650;
+  padding: 0;
 }
 
 .search-hit-hint {
@@ -985,6 +1015,26 @@ button.brand-home.top-title.on-home .brand-dot {
   font-size: 18px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.metric-est {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 2px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.metric.hit-tone-low .metric-est,
+.metric.hit-tone-mid .metric-est,
+.metric.hit-tone-high .metric-est,
+.hit-rate .metric-est {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 /* ================= 分组列表（iOS inset grouped） ================= */
@@ -1751,6 +1801,13 @@ button.brand-home.top-title.on-home .brand-dot {
 
 .metric.hit-tone-high .m-value {
   color: #a8c096;
+}
+
+.metric.hit-tone-low .metric-est,
+.metric.hit-tone-mid .metric-est,
+.metric.hit-tone-high .metric-est {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .agg-tok {

@@ -8,7 +8,7 @@ import type {
   TranscriptPart,
   TurnDetail,
 } from "./types";
-import { prettyModel, prettyModelVariant } from "./types";
+import { formatTokPerSec, prettyModel, prettyModelVariant, tokensPerSec } from "./types";
 
 /** 是否无有效 agent 名（占位符） */
 function isPlaceholderAgent(name?: string): boolean {
@@ -76,11 +76,13 @@ function totalOfTrace(m: {
   output: number;
   cacheRead?: number;
   reasoning?: number;
+  estCache?: number;
 }): number {
   return (
     (m.input || 0) +
     (m.output || 0) +
     (m.cacheRead || 0) +
+    (m.estCache || 0) +
     (m.reasoning || 0)
   );
 }
@@ -97,6 +99,59 @@ function formatTokens(n: number): string {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(Math.round(n));
+}
+
+function formatEstTokens(n?: number | null): string | null {
+  const v = Math.max(0, Number(n) || 0);
+  if (v <= 0) return null;
+  return `–（${formatTokens(v)}）`;
+}
+
+function formatCacheRead(official?: number | null, est?: number | null): string {
+  const read = Math.max(0, Number(official) || 0);
+  const estimated = Math.max(0, Number(est) || 0);
+  if (read > 0 && estimated > 0) {
+    return `${formatTokens(read)}（${formatTokens(estimated)}）`;
+  }
+  if (read > 0) return formatTokens(read);
+  return formatEstTokens(estimated) || formatTokens(0);
+}
+
+function formatHitRate(
+  rate: number | null | undefined,
+  est?: number | null
+): string {
+  const official =
+    rate != null && Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : null;
+  const estimated =
+    est != null && Number.isFinite(est) ? `${Math.round(est * 100)}%` : null;
+  if (official && estimated) return `${official}（${estimated}）`;
+  if (official) return official;
+  if (estimated) return `–（${estimated}）`;
+  return "–";
+}
+
+function uncachedInputOf(s: {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
+  estCacheReadTokens?: number;
+  noCacheData?: boolean;
+}): number {
+  const input = Math.max(0, Number(s.inputTokens) || 0);
+  const est = Math.max(0, Number(s.estCacheReadTokens) || 0);
+  if (s.noCacheData === false || est <= 0) return input;
+  const rest =
+    Math.max(0, Number(s.outputTokens) || 0) +
+    Math.max(0, Number(s.reasoningTokens) || 0);
+  const total = Math.max(0, Number(s.totalTokens) || 0);
+  if (total > 0) {
+    const asSnapshot = Math.abs(input + rest - total);
+    const asSplit = Math.abs(input + est + rest - total);
+    if (asSnapshot + 1 < asSplit) return Math.max(0, input - est);
+  }
+  return input;
 }
 
 function formatTs(iso?: string): string {
@@ -423,29 +478,80 @@ export default function SessionDetailPanel({ session, onClose }: Props) {
           </div>
           <div className="metric">
             <div className="m-label">Input</div>
-            <div className="m-value">{formatTokens(session.inputTokens)}</div>
+            <div
+              className="m-value"
+              title={
+                session.noCacheData && (session.estCacheReadTokens || 0) > 0
+                  ? "未命中的新 tokens（官方 context 快照减去前缀重叠估算）"
+                  : undefined
+              }
+            >
+              {formatTokens(uncachedInputOf(session))}
+            </div>
           </div>
           <div className="metric">
             <div className="m-label">Output</div>
             <div className="m-value">{formatTokens(session.outputTokens)}</div>
           </div>
           <div className="metric">
+            <div className="m-label">速度</div>
+            <div
+              className="m-value"
+              style={{ fontSize: 16 }}
+              title="(Output + Reasoning) ÷ 模型请求耗时（含首 token）"
+            >
+              {formatTokPerSec(
+                tokensPerSec(session.genTokens, session.genMs),
+                tokensPerSec(session.estGenTokens, session.estGenMs)
+              )}
+            </div>
+          </div>
+          <div className="metric">
             <div className="m-label">Cache</div>
-            <div className="m-value">{formatTokens(session.cacheReadTokens)}</div>
+            <div
+              className="m-value"
+              title={
+                session.cacheReadTokens > 0 &&
+                (session.estCacheReadTokens || 0) > 0
+                  ? "主数字为官方 Cache Read。括号内为前缀重叠估算"
+                  : session.noCacheData && (session.estCacheReadTokens || 0) > 0
+                    ? "本地无官方 cache。括号内为相邻请求 context 前缀重叠估算"
+                    : undefined
+              }
+            >
+              {formatCacheRead(session.cacheReadTokens, session.estCacheReadTokens)}
+            </div>
           </div>
           <div className="metric">
             <div className="m-label">命中</div>
             <div
               className="m-value"
-              title="Cache Read ÷ (Input + Cache Read)"
+              title={
+                session.noCacheData
+                  ? "本地无官方 cache，不计入汇总。括号内为相邻请求 context 前缀重叠估算"
+                  : (session.estCacheReadTokens || 0) > 0
+                    ? "主数字为官方命中率。括号内为前缀重叠估算"
+                    : "Cache Read ÷ (Input + Cache Read)"
+              }
               style={{ fontSize: 16 }}
             >
               {(() => {
-                const input = Math.max(0, session.inputTokens || 0);
-                const cache = Math.max(0, session.cacheReadTokens || 0);
-                const d = input + cache;
-                if (d <= 0) return "–";
-                return `${Math.round((cache / d) * 100)}%`;
+                const input = uncachedInputOf(session);
+                const official = session.noCacheData
+                  ? null
+                  : (() => {
+                      const inTok = Math.max(0, session.inputTokens || 0);
+                      const cache = Math.max(0, session.cacheReadTokens || 0);
+                      const d = inTok + cache;
+                      return d > 0 ? cache / d : null;
+                    })();
+                const estAmt = Math.max(0, session.estCacheReadTokens || 0);
+                const estDenom = input + estAmt;
+                const est =
+                  estAmt > 0 && estDenom > 0
+                    ? Math.min(1, estAmt / estDenom)
+                    : null;
+                return formatHitRate(official, est);
               })()}
             </div>
           </div>
@@ -546,7 +652,7 @@ export default function SessionDetailPanel({ session, onClose }: Props) {
                         <td className="num">{formatTokens(a.input)}</td>
                         <td className="num">{formatTokens(a.output)}</td>
                         <td className="num">
-                          {formatTokens(a.cacheRead || 0)}
+                          {formatCacheRead(a.cacheRead, a.estCache)}
                         </td>
                         <td className="num">
                           {formatTokens(a.reasoning || 0)}
@@ -578,7 +684,7 @@ export default function SessionDetailPanel({ session, onClose }: Props) {
                         <td className="num">{m.turns}</td>
                         <td className="num">{formatTokens(m.input)}</td>
                         <td className="num">{formatTokens(m.output)}</td>
-                        <td className="num">{formatTokens(m.cacheRead || 0)}</td>
+                        <td className="num">{formatCacheRead(m.cacheRead, m.estCache)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -607,6 +713,7 @@ export default function SessionDetailPanel({ session, onClose }: Props) {
                         <th className="num">Loop</th>
                         <th className="num">In</th>
                         <th className="num">Out</th>
+                        <th className="num">速度</th>
                         <th className="num">Cache</th>
                         <th className="num">Reason</th>
                       </tr>
@@ -666,9 +773,51 @@ export default function SessionDetailPanel({ session, onClose }: Props) {
                             />
                           </td>
                           <td className="num">{t.loopIndex ?? "–"}</td>
-                          <td className="num">{formatTokens(t.inputTokens)}</td>
+                          <td
+                            className="num"
+                            title={
+                              (t.estCacheReadTokens || 0) > 0
+                                ? "未命中 input（context 快照 − 前缀重叠估算）"
+                                : undefined
+                            }
+                          >
+                            {formatTokens(t.inputTokens)}
+                          </td>
                           <td className="num">{formatTokens(t.outputTokens)}</td>
-                          <td className="num">{formatTokens(t.cacheReadTokens)}</td>
+                          <td
+                            className="num"
+                            title={
+                              t.durationMs
+                                ? `${(t.durationMs / 1000).toFixed(1)}s`
+                                : t.estDurationMs
+                                  ? `估算 ${(t.estDurationMs / 1000).toFixed(1)}s`
+                                  : undefined
+                            }
+                          >
+                            {formatTokPerSec(
+                              tokensPerSec(
+                                (t.outputTokens || 0) + (t.reasoningTokens || 0),
+                                t.durationMs
+                              ),
+                              tokensPerSec(
+                                (t.outputTokens || 0) + (t.reasoningTokens || 0),
+                                t.estDurationMs
+                              )
+                            )}
+                          </td>
+                          <td
+                            className="num"
+                            title={
+                              (t.estCacheReadTokens || 0) > 0
+                                ? "本地无官方 cache。括号内为前缀重叠估算"
+                                : undefined
+                            }
+                          >
+                            {formatCacheRead(
+                              t.cacheReadTokens,
+                              t.estCacheReadTokens
+                            )}
+                          </td>
                           <td className="num">{formatTokens(t.reasoningTokens)}</td>
                         </tr>
                       ))}

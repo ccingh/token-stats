@@ -10,12 +10,18 @@
  * 用量：event_msg.token_count 的 last_token_usage（增量）。
  * cache / reasoning 按官方字段视为 input / output 子集，走 splitInclusiveUsage。
  * 子会话：首条 token_count 视为继承父快照，只计之后推进的用量。
+ *
+ * 速度：本地没有模型调用墙钟。task_complete.duration_ms 含工具；
+ * item_completed 起止几乎是落盘瞬间。token_count 写在工具跑完之后。
+ * 估算：user/task → 本段第一次 function_call/custom_tool_call（没有工具则用 token_count），
+ * 作 estDurationMs（Grok 同款，界面 –（xx/s））。
  */
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { codexHomes } from "../paths.js";
 import { normalizeAgentName } from "../agentLabel.js";
+import { sanitizeEstGenMs } from "../speed.js";
 import {
   makeSession,
   normalizeModelName,
@@ -362,6 +368,42 @@ function eventTs(obj) {
 }
 
 /**
+ * 事件墙钟（ms）。Codex 混用 ISO、秒、毫秒。
+ * @param {any} obj
+ */
+function eventMs(obj) {
+  const iso = obj?.timestamp || obj?.payload?.timestamp;
+  if (iso != null && iso !== "") {
+    const s = String(iso).trim();
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      const n = Number(s);
+      if (Number.isFinite(n) && n > 0) return Math.abs(n) < 1e11 ? n * 1000 : n;
+    } else {
+      const t = Date.parse(s);
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  const p = obj?.payload;
+  if (!p || typeof p !== "object") return 0;
+  const ms = Number(p.completed_at_ms || p.started_at_ms);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  const sec = Number(p.completed_at || p.started_at);
+  if (Number.isFinite(sec) && sec > 0) {
+    return Math.abs(sec) < 1e11 ? sec * 1000 : sec;
+  }
+  return 0;
+}
+
+/**
+ * @param {any} payload
+ */
+function itemCompletedMs(payload) {
+  const ms = Number(payload?.completed_at_ms);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  return 0;
+}
+
+/**
  * @param {string} file
  * @param {{
  *   indexTitle?: string,
@@ -390,6 +432,10 @@ export function parseRolloutFile(file, hints = {}) {
   let prevFp = "";
   let skipInherited = false;
   let inheritedConsumed = false;
+  /** 上一次 user / 工具结果 / token_count：下一段生成的起点 */
+  let lastBoundaryMs = 0;
+  /** 本段生成里第一次 tool_call（模型吐出工具调用 ≈ 生成结束，工具墙钟还没开始） */
+  let pendingGenEndMs = 0;
 
   /** @type {any[]} */
   const turns = [];
@@ -422,6 +468,22 @@ export function parseRolloutFile(file, hints = {}) {
         normalizeAgentName(payload.agent_nickname || payload.agent_role) ||
         undefined;
       if (nick) agentName = nick;
+      const ms = eventMs(obj);
+      if (ms) lastBoundaryMs = ms;
+      continue;
+    }
+
+    if (type === "response_item") {
+      const rt = payload.type;
+      const ms = eventMs(obj);
+      // token_count 写在工具结果之后；第一次 tool_call 才是本段生成结束
+      if (
+        (rt === "function_call" || rt === "custom_tool_call") &&
+        ms &&
+        !pendingGenEndMs
+      ) {
+        pendingGenEndMs = ms;
+      }
       continue;
     }
 
@@ -436,11 +498,32 @@ export function parseRolloutFile(file, hints = {}) {
 
     const pType = payload.type;
 
+    if (type === "event_msg" && pType === "task_started") {
+      const ms = eventMs(obj);
+      if (ms) lastBoundaryMs = ms;
+      pendingGenEndMs = 0;
+      continue;
+    }
+
+    if (type === "event_msg" && pType === "item_completed") {
+      const itemType = payload.item && payload.item.type;
+      // CommandExecution 在 token_count 之前落盘，不能当生成终点（会把耗时压成十几毫秒）
+      if (itemType === "UserMessage") {
+        const ms = itemCompletedMs(payload) || eventMs(obj);
+        if (ms) lastBoundaryMs = ms;
+        pendingGenEndMs = 0;
+      }
+      continue;
+    }
+
     if (type === "event_msg" && pType === "user_message") {
       messageCount += 1;
       turnCount += 1;
       const text = String(payload.message || "").trim();
       if (text && !firstUser) firstUser = text;
+      const ms = eventMs(obj);
+      if (ms) lastBoundaryMs = ms;
+      pendingGenEndMs = 0;
       continue;
     }
 
@@ -489,6 +572,16 @@ export function parseRolloutFile(file, hints = {}) {
       reasoning += parts.reasoning;
       cacheRead += parts.cacheRead;
       cacheWrite += parts.cacheWrite;
+      const endMs = eventMs(obj);
+      const genEnd = pendingGenEndMs && pendingGenEndMs > lastBoundaryMs
+        ? pendingGenEndMs
+        : endMs;
+      const estDurationMs =
+        lastBoundaryMs && genEnd > lastBoundaryMs
+          ? sanitizeEstGenMs(genEnd - lastBoundaryMs)
+          : 0;
+      if (endMs) lastBoundaryMs = endMs;
+      pendingGenEndMs = 0;
       turns.push({
         ts,
         model: model || undefined,
@@ -497,6 +590,7 @@ export function parseRolloutFile(file, hints = {}) {
         cacheReadTokens: parts.cacheRead,
         cacheWriteTokens: parts.cacheWrite,
         reasoningTokens: parts.reasoning,
+        estDurationMs: estDurationMs || undefined,
       });
     }
   }
@@ -644,6 +738,7 @@ export function scan(ctx = {}) {
             model: t.model || parsed.model,
             sessionId: sid,
             requestCount: 1,
+            estDurationMs: t.estDurationMs,
           });
         }
       }
@@ -725,6 +820,7 @@ export function getDetail(sessionId) {
     cacheReadTokens: t.cacheReadTokens,
     cacheWriteTokens: t.cacheWriteTokens,
     reasoningTokens: t.reasoningTokens,
+    estDurationMs: t.estDurationMs,
   }));
   /** @type {Map<string, any>} */
   const byModel = new Map();

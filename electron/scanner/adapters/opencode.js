@@ -8,6 +8,7 @@ import {
   splitModelParts,
   toIso,
 } from "../types.js";
+import { durationFromRange } from "../speed.js";
 
 export const id = "opencode";
 export const displayName = "OpenCode";
@@ -263,6 +264,10 @@ function scanMessageTable(db, opts) {
       row.time_created;
     if (!ts || !hourly?.add) continue;
 
+    const durationMs = durationFromRange(
+      data.time?.created,
+      data.time?.completed
+    );
     hourly.add(id, ts, {
       inputTokens: parts.input,
       outputTokens: parts.output,
@@ -272,6 +277,7 @@ function scanMessageTable(db, opts) {
       model,
       sessionId: sid,
       requestCount: 1,
+      durationMs: durationMs || undefined,
     });
     hourlyFromMsgs.add(sid);
   }
@@ -514,6 +520,10 @@ function loadAssistantTurns(db, sessionId, table) {
     const modelVariant = mp.variant;
     const agentName = agentFromData(data);
     i += 1;
+    const durationMs = durationFromRange(
+      data.time?.created,
+      data.time?.completed
+    );
     turns.push({
       index: i,
       ts: toIso(
@@ -530,6 +540,7 @@ function loadAssistantTurns(db, sessionId, table) {
       cacheReadTokens: parts.cacheRead,
       cacheWriteTokens: parts.cacheWrite,
       reasoningTokens: parts.reasoning,
+      durationMs: durationMs || undefined,
     });
     const cur = byModel.get(model) || {
       model,

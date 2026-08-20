@@ -191,6 +191,13 @@ export function buildPayload(scanResult) {
         dedupExcluded: s.dedupExcluded,
         dedupReason: s.dedupReason,
         dedupKeptBy: s.dedupKeptBy,
+        modelVariant: s.modelVariant,
+        noCacheData: s.noCacheData,
+        estCacheReadTokens: s.estCacheReadTokens,
+        genMs: s.genMs,
+        genTokens: s.genTokens,
+        estGenMs: s.estGenMs,
+        estGenTokens: s.estGenTokens,
       }))
     : [];
 
@@ -210,6 +217,11 @@ export function buildPayload(scanResult) {
         events: h.events,
         costUsd: h.costUsd,
         costCny: h.costCny,
+        genMs: h.genMs,
+        genTokens: h.genTokens,
+        estGenMs: h.estGenMs,
+        estGenTokens: h.estGenTokens,
+        estCacheReadTokens: h.estCacheReadTokens,
       }))
     : [];
 

@@ -204,9 +204,15 @@ export function computeLifetimeInsights(
     if (t <= 0 && (s.inputTokens || 0) <= 0 && (s.outputTokens || 0) <= 0) continue;
     lifetimeSessions += 1;
     lifetimeTokens += t;
-    composition.input += s.inputTokens || 0;
+    composition.input += (() => {
+      const input = s.inputTokens || 0;
+      const est = s.estCacheReadTokens || 0;
+      if (s.noCacheData && est > 0 && est <= input) return Math.max(0, input - est);
+      return input;
+    })();
     composition.output += s.outputTokens || 0;
-    composition.cacheRead += s.cacheReadTokens || 0;
+    composition.cacheRead +=
+      (s.cacheReadTokens || 0) + (s.noCacheData ? s.estCacheReadTokens || 0 : 0);
     composition.cacheWrite += s.cacheWriteTokens || 0;
     composition.reasoning += s.reasoningTokens || 0;
     clientMap.set(s.client, (clientMap.get(s.client) || 0) + t);

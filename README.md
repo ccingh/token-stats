@@ -47,7 +47,7 @@
 | | |
 |---|---|
 | **本地扫描** | 直接读各 Agent 落盘数据，不经过第三方统计服务 |
-| **10 个工具** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness |
+| **11 个工具** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness / Freebuff |
 | **多维汇总** | 按工具、模型、项目、日期；趋势图与 53 周热力图 |
 | **请求口径** | 请求 / Turn / 消息数、缓存命中、子会话并账 |
 | **模型主名** | 思考档位（max / high）只做彩色标记，不拆散模型统计 |
@@ -73,6 +73,7 @@
 | Reasonix | `~/.reasonix/sessions` |
 | MiMo Code | `~/.local/share/mimocode/mimocode.db`（或 `$MIMOCODE_HOME/data/mimocode.db`） |
 | DeepSeek Harness（dsh） | `~/.dsh/sessions/**/session.jsonl.zstd`（或 `$DSH_HOME`） |
+| Freebuff | `~/.config/manicode/projects/**/chats/*/log.jsonl`（每步 `contextTokenCount` 拆成未命中 input + 前缀重叠估算 cache；output 由配对 End 的回复/工具调用估算；本地无官方 cache，命中率不计入官方汇总。仅估算时显示 `–（x）`；概览并列时主数字是官方总体命中，括号是把估算 cache 计入后的总体命中，如 `92%（95%）`） |
 
 Windows 下 `~` 一般为用户主目录（如 `C:\Users\<你>`）。
 

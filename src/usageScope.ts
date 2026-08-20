@@ -23,6 +23,11 @@ export type TokenParts = {
   totalTokens: number;
   cost: number;
   events: number;
+  genMs: number;
+  genTokens: number;
+  estGenMs: number;
+  estGenTokens: number;
+  estCacheReadTokens: number;
 };
 
 export type ScopedSession = SessionRecord & {
@@ -41,6 +46,11 @@ export function emptyParts(): TokenParts {
     totalTokens: 0,
     cost: 0,
     events: 0,
+    genMs: 0,
+    genTokens: 0,
+    estGenMs: 0,
+    estGenTokens: 0,
+    estCacheReadTokens: 0,
   };
 }
 
@@ -53,6 +63,11 @@ export function addParts(a: TokenParts, b: Partial<TokenParts>): void {
   a.totalTokens += b.totalTokens || 0;
   a.cost += b.cost || 0;
   a.events += b.events || 0;
+  a.genMs += b.genMs || 0;
+  a.genTokens += b.genTokens || 0;
+  a.estGenMs += b.estGenMs || 0;
+  a.estGenTokens += b.estGenTokens || 0;
+  a.estCacheReadTokens += b.estCacheReadTokens || 0;
 }
 
 export function sessionKey(s: { client: string; sessionId: string }): string {
@@ -129,6 +144,11 @@ export function buildRangeSessionUsage(
       totalTokens: row.totalTokens || 0,
       cost: costFn(row),
       events: row.events || 0,
+      genMs: row.genMs || 0,
+      genTokens: row.genTokens || 0,
+      estGenMs: row.estGenMs || 0,
+      estGenTokens: row.estGenTokens || 0,
+      estCacheReadTokens: row.estCacheReadTokens || 0,
     });
     if (row.model) e.model = row.model;
   }
@@ -207,7 +227,9 @@ export function buildHourlyDimTotals(
     if (!activeClients.has(row.client)) continue;
     if (!hourInRange(row.hour, rangeStart, todayKey, rangeEnd)) continue;
     const tok = row.totalTokens || 0;
-    if (tok <= 0) continue;
+    const genMs = row.genMs || 0;
+    const estGenMs = row.estGenMs || 0;
+    if (tok <= 0 && genMs <= 0 && estGenMs <= 0) continue;
     const parts = {
       inputTokens: row.inputTokens || 0,
       outputTokens: row.outputTokens || 0,
@@ -217,6 +239,11 @@ export function buildHourlyDimTotals(
       totalTokens: tok,
       cost: costFn(row),
       events: row.events || 0,
+      genMs: row.genMs || 0,
+      genTokens: row.genTokens || 0,
+      estGenMs: row.estGenMs || 0,
+      estGenTokens: row.estGenTokens || 0,
+      estCacheReadTokens: row.estCacheReadTokens || 0,
     };
     addParts(total, parts);
     bump(byClient, row.client || "未知工具", parts);
@@ -316,6 +343,11 @@ export function buildSessionUsageOnDay(
       totalTokens: tok,
       cost: costFn ? costFn(row) : 0,
       events: row.events || 0,
+      genMs: row.genMs || 0,
+      genTokens: row.genTokens || 0,
+      estGenMs: row.estGenMs || 0,
+      estGenTokens: row.estGenTokens || 0,
+      estCacheReadTokens: row.estCacheReadTokens || 0,
     });
     if (row.model) e.model = row.model;
   }
@@ -418,6 +450,14 @@ export function applyUsageScope(
       // 区间请求数 = 小时桶 events（每条模型请求 +1；Grok 可按 modelCalls 加权）
       requestCount:
         u.events > 0 ? u.events : s.requestCount,
+      genMs: u.genMs || undefined,
+      genTokens: u.genTokens || undefined,
+      estGenMs: u.estGenMs || undefined,
+      estGenTokens: u.estGenTokens || undefined,
+      estCacheReadTokens:
+        (u.estCacheReadTokens || 0) > 0
+          ? u.estCacheReadTokens
+          : s.estCacheReadTokens,
       costUsd: c.costUsd,
       costCny: c.costCny,
       usageSource: "range",

@@ -3,6 +3,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
 import { makeSession, toIso } from "../types.js";
+import { sanitizeGenMs } from "../speed.js";
 
 export const id = "kimi";
 export const displayName = "Kimi Code";
@@ -133,10 +134,20 @@ async function sumWire(wirePath, sessionId) {
 
   const stream = fs.createReadStream(wirePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  /** @type {{ ms: number, time: number, used: boolean }[]} */
+  const timings = [];
+  /** @type {{ inTok: number, outTok: number, cr: number, cw: number, model?: string, time: any, t: number }[]} */
+  const usages = [];
 
   for await (const line of rl) {
-    // profile / mode 可能出现在非 usage 行
-    if (line.includes("profileName") || line.includes("usage")) {
+    // profile / 耗时 / usage 可能分落在不同行
+    if (
+      line.includes("profileName") ||
+      line.includes("usage") ||
+      line.includes("llmStreamDurationMs") ||
+      line.includes("llmFirstTokenLatencyMs") ||
+      line.includes("llmServerDecodeMs")
+    ) {
       let obj;
       try {
         obj = JSON.parse(line);
@@ -144,6 +155,23 @@ async function sumWire(wirePath, sessionId) {
         continue;
       }
       if (obj.profileName) profileName = String(obj.profileName);
+      const ev = obj.event && typeof obj.event === "object" ? obj.event : obj;
+      const streamMs =
+        Number(ev.llmStreamDurationMs) ||
+        Number(ev.llmServerDecodeMs) ||
+        0;
+      const ttftMs =
+        Number(ev.llmFirstTokenLatencyMs) ||
+        Number(ev.llmServerFirstTokenMs) ||
+        0;
+      const wall = sanitizeGenMs(streamMs + ttftMs);
+      if (wall) {
+        timings.push({
+          ms: wall,
+          time: Number(obj.time) || Number(ev.time) || timings.length,
+          used: false,
+        });
+      }
       if (obj.type !== "usage.record") continue;
       const u = obj.usage || {};
       const inTok = Number(u.inputOther) || 0;
@@ -157,16 +185,49 @@ async function sumWire(wirePath, sessionId) {
       if (obj.model) model = obj.model;
       if (obj.time) lastTs = toIso(obj.time) || lastTs;
       messageCount += 1;
-      if (hourlySink?.add && obj.time) {
-        hourlySink.add(id, obj.time, {
-          inputTokens: inTok,
-          outputTokens: outTok,
-          cacheReadTokens: cr,
-          cacheWriteTokens: cw,
-          model: obj.model ? String(obj.model) : undefined,
-          sessionId: sessionId || undefined,
-        });
+      usages.push({
+        inTok,
+        outTok,
+        cr,
+        cw,
+        model: obj.model ? String(obj.model) : undefined,
+        time: obj.time,
+        t: Number(obj.time) || usages.length,
+      });
+    }
+  }
+
+  if (hourlySink?.add) {
+    for (const u of usages) {
+      if (!u.time) continue;
+      let best = -1;
+      let bestDt = Infinity;
+      let bestSign = 2;
+      for (let i = 0; i < timings.length; i++) {
+        if (timings[i].used) continue;
+        const dt = u.t - timings[i].time;
+        const sign = dt >= 0 ? 0 : 1;
+        const abs = Math.abs(dt);
+        if (sign < bestSign || (sign === bestSign && abs < bestDt)) {
+          bestSign = sign;
+          bestDt = abs;
+          best = i;
+        }
       }
+      let durationMs;
+      if (best >= 0) {
+        timings[best].used = true;
+        durationMs = timings[best].ms;
+      }
+      hourlySink.add(id, u.time, {
+        inputTokens: u.inTok,
+        outputTokens: u.outTok,
+        cacheReadTokens: u.cr,
+        cacheWriteTokens: u.cw,
+        model: u.model,
+        sessionId: sessionId || undefined,
+        durationMs,
+      });
     }
   }
 
@@ -414,13 +475,35 @@ export async function getDetail(sessionId) {
 
     const stream = fs.createReadStream(wire, { encoding: "utf8" });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let pendingMs = 0;
     for await (const line of rl) {
-      if (!line.includes("usage.record")) continue;
+      if (
+        !line.includes("usage.record") &&
+        !line.includes("llmStreamDurationMs") &&
+        !line.includes("llmFirstTokenLatencyMs")
+      ) {
+        continue;
+      }
       let obj;
       try {
         obj = JSON.parse(line);
       } catch {
         continue;
+      }
+      const ev = obj.event && typeof obj.event === "object" ? obj.event : obj;
+      const wall = sanitizeGenMs(
+        (Number(ev.llmStreamDurationMs) || Number(ev.llmServerDecodeMs) || 0) +
+          (Number(ev.llmFirstTokenLatencyMs) ||
+            Number(ev.llmServerFirstTokenMs) ||
+            0)
+      );
+      if (wall) {
+        pendingMs = wall;
+        const last = turns[turns.length - 1];
+        if (last && !last.durationMs) {
+          last.durationMs = pendingMs;
+          pendingMs = 0;
+        }
       }
       if (obj.type !== "usage.record") continue;
       const u = obj.usage || {};
@@ -445,12 +528,14 @@ export async function getDetail(sessionId) {
         cacheReadTokens: cacheRead,
         cacheWriteTokens: cacheWrite,
         reasoningTokens: 0,
+        durationMs: pendingMs || undefined,
         isSubagent: isSub,
         agentName,
         sourceSessionId: isSub
           ? `${item.sessionId}/${folder}`
           : item.sessionId,
       });
+      pendingMs = 0;
       const cur = byModel.get(model) || {
         model,
         turns: 0,

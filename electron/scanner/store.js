@@ -240,6 +240,7 @@ function serializeStored(s, meta) {
         cacheReadTokens: s.cacheReadTokens,
         cacheWriteTokens: s.cacheWriteTokens,
         reasoningTokens: s.reasoningTokens,
+        estCacheReadTokens: s.estCacheReadTokens,
       }),
     costUsd: s.costUsd,
     costCny: s.costCny,
@@ -251,6 +252,12 @@ function serializeStored(s, meta) {
     sessionKind: s.sessionKind,
     turnCount: s.turnCount,
     requestCount: s.requestCount,
+    noCacheData: s.noCacheData ? true : undefined,
+    estCacheReadTokens: s.estCacheReadTokens || undefined,
+    genMs: s.genMs || undefined,
+    genTokens: s.genTokens || undefined,
+    estGenMs: s.estGenMs || undefined,
+    estGenTokens: s.estGenTokens || undefined,
     // 不持久化 mergedChildren / childCount（并账结果，下次重算）
     firstSeenAt: meta.firstSeenAt,
     lastSeenAt: meta.lastSeenAt,
@@ -296,6 +303,7 @@ function deserializeStored(raw) {
         cacheReadTokens: raw.cacheReadTokens,
         cacheWriteTokens: raw.cacheWriteTokens,
         reasoningTokens: raw.reasoningTokens,
+        estCacheReadTokens: raw.estCacheReadTokens,
       }),
     costUsd: raw.costUsd != null ? Number(raw.costUsd) : undefined,
     costCny: raw.costCny != null ? Number(raw.costCny) : undefined,
@@ -308,6 +316,27 @@ function deserializeStored(raw) {
     turnCount: raw.turnCount != null ? Number(raw.turnCount) : undefined,
     requestCount:
       raw.requestCount != null ? Number(raw.requestCount) : undefined,
+    noCacheData: raw.noCacheData ? true : undefined,
+    estCacheReadTokens:
+      raw.estCacheReadTokens != null && Number(raw.estCacheReadTokens) > 0
+        ? Number(raw.estCacheReadTokens)
+        : undefined,
+    genMs:
+      raw.genMs != null && Number(raw.genMs) > 0
+        ? Number(raw.genMs)
+        : undefined,
+    genTokens:
+      raw.genTokens != null && Number(raw.genTokens) > 0
+        ? Number(raw.genTokens)
+        : undefined,
+    estGenMs:
+      raw.estGenMs != null && Number(raw.estGenMs) > 0
+        ? Number(raw.estGenMs)
+        : undefined,
+    estGenTokens:
+      raw.estGenTokens != null && Number(raw.estGenTokens) > 0
+        ? Number(raw.estGenTokens)
+        : undefined,
     deleted: !!raw.deleted,
     deletedAt: raw.deletedAt || undefined,
     synthetic: raw.synthetic ? true : undefined,

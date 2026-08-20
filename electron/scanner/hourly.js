@@ -14,6 +14,7 @@ import {
   isLongContextPrompt,
   promptTokensOf,
 } from "./pricing.js";
+import { genTokensOf, sanitizeEstGenMs, sanitizeGenMs } from "./speed.js";
 
 const UNKNOWN = "未知模型";
 
@@ -112,6 +113,10 @@ export function preferSessionModel(turnModel, sessionModel) {
  *     requests: number,
  *     longContextRequests: number,
  *     tokens: number,
+ *     genMs: number,
+ *     genTokens: number,
+ *     estGenMs: number,
+ *     estGenTokens: number,
  *     hasUsd: boolean,
  *     hasCny: boolean,
  *   }>,
@@ -134,6 +139,11 @@ export function createHourlyMap() {
    *   costUsd?: number,
    *   costCny?: number,
    *   longContextEvents?: number,
+   *   genMs?: number,
+   *   genTokens?: number,
+   *   estGenMs?: number,
+   *   estGenTokens?: number,
+   *   estCacheReadTokens?: number,
    * }>} */
   const map = new Map();
 
@@ -143,6 +153,10 @@ export function createHourlyMap() {
    *   requests: number,
    *   longContextRequests: number,
    *   tokens: number,
+   *   genMs: number,
+   *   genTokens: number,
+   *   estGenMs: number,
+   *   estGenTokens: number,
    *   hasUsd: boolean,
    *   hasCny: boolean,
    * }>} */
@@ -168,8 +182,29 @@ export function createHourlyMap() {
    *   sessionId?: string,
    *   requestCount?: number  本批模型请求次数，默认 1（Grok turn 可传 modelCalls）
    *   singleRequest?: boolean  明确是/不是单次请求（会话兜底写入必须 false）
+   *   durationMs?: number  这一次模型调用墙钟（含 TTFT），不含工具
+   *   estDurationMs?: number  非官方估算耗时，只进 estGen*，不进汇总 tok/s
+   *   genTokens?: number  与 durationMs 配对的生成 token；默认 output+reasoning
+   *   estCacheReadTokens?: number  仅展示用估算 cache（freebuff），不进 cacheRead
+   *   speedOnly?: boolean  只记速度，不改 token / 请求 / 成本
    * }} parts
    */
+  function emptyAcc() {
+    return {
+      usd: 0,
+      cny: 0,
+      requests: 0,
+      longContextRequests: 0,
+      tokens: 0,
+      genMs: 0,
+      genTokens: 0,
+      estGenMs: 0,
+      estGenTokens: 0,
+      hasUsd: false,
+      hasCny: false,
+    };
+  }
+
   function emptyBucket(hour, client, model, sid) {
     return {
       hour,
@@ -186,21 +221,18 @@ export function createHourlyMap() {
       costUsd: undefined,
       costCny: undefined,
       longContextEvents: 0,
+      genMs: 0,
+      genTokens: 0,
+      estGenMs: 0,
+      estGenTokens: 0,
+      estCacheReadTokens: 0,
     };
   }
 
   function addSessionCost(client, sid, priced, reqs, lc, tokens) {
     if (!sid) return;
     const k = `${client}:${sid}`;
-    const cur = sessionCosts.get(k) || {
-      usd: 0,
-      cny: 0,
-      requests: 0,
-      longContextRequests: 0,
-      tokens: 0,
-      hasUsd: false,
-      hasCny: false,
-    };
+    const cur = sessionCosts.get(k) || emptyAcc();
     if (priced.usd != null) {
       cur.usd += priced.usd;
       cur.hasUsd = true;
@@ -213,6 +245,51 @@ export function createHourlyMap() {
     cur.longContextRequests += lc;
     cur.tokens += tokens;
     sessionCosts.set(k, cur);
+  }
+
+  function addSessionSpeed(client, sid, genMs, genTokens) {
+    if (!sid || !genMs || !genTokens) return;
+    const k = `${client}:${sid}`;
+    const cur = sessionCosts.get(k) || emptyAcc();
+    cur.genMs += genMs;
+    cur.genTokens += genTokens;
+    sessionCosts.set(k, cur);
+  }
+
+  function addSessionEstSpeed(client, sid, genMs, genTokens) {
+    if (!sid || !genMs || !genTokens) return;
+    const k = `${client}:${sid}`;
+    const cur = sessionCosts.get(k) || emptyAcc();
+    cur.estGenMs += genMs;
+    cur.estGenTokens += genTokens;
+    sessionCosts.set(k, cur);
+  }
+
+  function genOf(parts, output, reasoning) {
+    return parts.genTokens != null
+      ? Math.max(0, Number(parts.genTokens) || 0)
+      : genTokensOf({ outputTokens: output, reasoningTokens: reasoning });
+  }
+
+  function applySpeed(cur, client, sid, parts, output, reasoning, reqs) {
+    const d = sanitizeGenMs(parts.durationMs);
+    if (d) {
+      const g = genOf(parts, output, reasoning);
+      // 一条 duration 对应多次请求时无法拆，丢掉
+      if (g && (reqs === 1 || parts.speedOnly || reqs == null)) {
+        cur.genMs = (cur.genMs || 0) + d;
+        cur.genTokens = (cur.genTokens || 0) + g;
+        addSessionSpeed(client, sid, d, g);
+        return;
+      }
+    }
+    const ed = sanitizeEstGenMs(parts.estDurationMs);
+    if (!ed) return;
+    const g = genOf(parts, output, reasoning);
+    if (!g) return;
+    cur.estGenMs = (cur.estGenMs || 0) + ed;
+    cur.estGenTokens = (cur.estGenTokens || 0) + g;
+    addSessionEstSpeed(client, sid, ed, g);
   }
 
   function priceChunk(model, parts, reqs, single) {
@@ -240,6 +317,15 @@ export function createHourlyMap() {
     const hour = hourKeyFromTs(ts);
     if (!hour || !client) return;
     const model = normModel(parts.model);
+    // 显式成本覆盖（如免费档 costMode=free → $0）：跳过 estimateCost
+    const explicitCost =
+      parts.costUsd != null || parts.costCny != null
+        ? {
+            usd: parts.costUsd != null ? Number(parts.costUsd) : null,
+            cny: parts.costCny != null ? Number(parts.costCny) : null,
+            lc: 0,
+          }
+        : null;
     // 保留 sessionId 维度，便于「7 天」只算区间内用量（跨周同一会话可拆）
     const sid =
       parts.sessionId != null && String(parts.sessionId).trim()
@@ -251,16 +337,30 @@ export function createHourlyMap() {
       cur = emptyBucket(hour, client, model, sid);
       map.set(key, cur);
     }
+    if (parts.speedOnly) {
+      applySpeed(
+        cur,
+        client,
+        sid,
+        parts,
+        Number(parts.outputTokens) || 0,
+        Number(parts.reasoningTokens) || 0,
+        1
+      );
+      return;
+    }
     const input = Number(parts.inputTokens) || 0;
     const output = Number(parts.outputTokens) || 0;
     const cacheRead = Number(parts.cacheReadTokens) || 0;
     const cacheWrite = Number(parts.cacheWriteTokens) || 0;
     const reasoning = Number(parts.reasoningTokens) || 0;
+    const estCache = Number(parts.estCacheReadTokens) || 0;
     cur.inputTokens += input;
     cur.outputTokens += output;
     cur.cacheReadTokens += cacheRead;
     cur.cacheWriteTokens += cacheWrite;
     cur.reasoningTokens += reasoning;
+    if (estCache) cur.estCacheReadTokens = (cur.estCacheReadTokens || 0) + estCache;
     let addedTokens;
     if (parts.totalTokens != null && Number.isFinite(Number(parts.totalTokens))) {
       addedTokens = Number(parts.totalTokens);
@@ -272,6 +372,7 @@ export function createHourlyMap() {
         cacheReadTokens: cacheRead,
         cacheWriteTokens: cacheWrite,
         reasoningTokens: reasoning,
+        estCacheReadTokens: estCache,
       });
       cur.totalTokens += addedTokens;
     }
@@ -281,11 +382,12 @@ export function createHourlyMap() {
     const single =
       parts.singleRequest === true ||
       (parts.singleRequest !== false && reqs === 1);
-    const priced = priceChunk(model, parts, reqs, single);
+    const priced = explicitCost || priceChunk(model, parts, reqs, single);
     if (priced.usd != null) cur.costUsd = (cur.costUsd || 0) + priced.usd;
     if (priced.cny != null) cur.costCny = (cur.costCny || 0) + priced.cny;
     if (priced.lc) cur.longContextEvents = (cur.longContextEvents || 0) + priced.lc;
     addSessionCost(client, sid, priced, reqs, priced.lc, addedTokens);
+    applySpeed(cur, client, sid, parts, output, reasoning, reqs);
   }
 
   /**
@@ -326,6 +428,12 @@ export function createHourlyMap() {
       cur.reasoningTokens += e.reasoningTokens || 0;
       cur.totalTokens += e.totalTokens || 0;
       cur.events += e.events || 0;
+      cur.genMs = (cur.genMs || 0) + (e.genMs || 0);
+      cur.genTokens = (cur.genTokens || 0) + (e.genTokens || 0);
+      cur.estGenMs = (cur.estGenMs || 0) + (e.estGenMs || 0);
+      cur.estGenTokens = (cur.estGenTokens || 0) + (e.estGenTokens || 0);
+      cur.estCacheReadTokens =
+        (cur.estCacheReadTokens || 0) + (e.estCacheReadTokens || 0);
 
       let usd = e.costUsd;
       let cny = e.costCny;

@@ -43,6 +43,14 @@ export interface SessionRecord {
   dedupExcluded?: boolean;
   dedupReason?: string;
   dedupKeptBy?: string;
+  /** 本地无 cache 官方记录（如 freebuff）：命中率统计应排除 */
+  noCacheData?: boolean;
+  /** 仅展示用的估算 cache，不计入 cacheRead / 官方命中率（计入 total） */
+  estCacheReadTokens?: number;
+  genMs?: number;
+  genTokens?: number;
+  estGenMs?: number;
+  estGenTokens?: number;
 }
 
 export interface HourlyBucket {
@@ -59,6 +67,12 @@ export interface HourlyBucket {
   events?: number;
   costUsd?: number;
   costCny?: number;
+  genMs?: number;
+  genTokens?: number;
+  estGenMs?: number;
+  estGenTokens?: number;
+  /** 仅展示用估算 cache（freebuff），不计入 cacheRead */
+  estCacheReadTokens?: number;
 }
 
 /** 会话用量口径：区间 / 生涯 / 无法拆分时的全量兜底 */
@@ -112,6 +126,19 @@ export interface AppSettings {
   supabaseAnonKey: string;
 }
 
+/** Kimi Code：登录 `kimi-code/`，旧 API `kimi-for-coding/`。无斜杠的 kimi-for-coding 是 K2.7，不剥。 */
+function cleanModelBase(id: string): string {
+  let s = String(id || "")
+    .replace(/-build$/, "")
+    .trim();
+  const m = s.match(/^(kimi-code|kimi-for-coding)\//i);
+  if (m) {
+    const tail = s.slice(m[0].length).trim();
+    if (tail) s = tail;
+  }
+  return s;
+}
+
 export function normalizeModelVariant(v?: string | null): string | undefined {
   if (v == null) return undefined;
   const t = String(v).trim();
@@ -142,7 +169,7 @@ export function splitModelParts(raw?: string | null): {
         (typeof o.model === "string" ? o.model : undefined);
       if (id != null && String(id).trim()) {
         return {
-          base: String(id).replace(/-build$/, "").trim(),
+          base: cleanModelBase(String(id)),
           variant: normalizeModelVariant(
             o.variant != null ? String(o.variant) : undefined
           ),
@@ -156,7 +183,7 @@ export function splitModelParts(raw?: string | null): {
       if (idM) {
         const vM = s.match(/"variant"\s*:\s*"([^"]+)"/i);
         return {
-          base: idM[1].replace(/-build$/, ""),
+          base: cleanModelBase(idM[1]),
           variant: normalizeModelVariant(vM?.[1]),
         };
       }
@@ -165,11 +192,11 @@ export function splitModelParts(raw?: string | null): {
   const dot = s.indexOf("·");
   if (dot >= 0) {
     return {
-      base: s.slice(0, dot).replace(/-build$/, "").trim(),
+      base: cleanModelBase(s.slice(0, dot)),
       variant: normalizeModelVariant(s.slice(dot + 1)),
     };
   }
-  return { base: s.replace(/-build$/, "").trim() };
+  return { base: cleanModelBase(s) };
 }
 
 export function modelAggKey(raw?: string | null): string {
@@ -207,4 +234,31 @@ export function sanitizeSnapshotPayload(
       return base && base !== h.model ? { ...h, model: base } : h;
     }),
   };
+}
+
+export function tokensPerSec(
+  genTokens?: number | null,
+  genMs?: number | null
+): number | null {
+  const t = Number(genTokens) || 0;
+  const ms = Number(genMs) || 0;
+  if (t <= 0 || ms < 50) return null;
+  return t / (ms / 1000);
+}
+
+function formatSpeedNumber(n: number): string {
+  if (n >= 100) return `${Math.round(n)}/s`;
+  if (n >= 10) return `${n.toFixed(1)}/s`;
+  return `${n.toFixed(2)}/s`;
+}
+
+export function formatTokPerSec(
+  n: number | null | undefined,
+  est?: number | null
+): string {
+  if (n != null && Number.isFinite(n) && n > 0) return formatSpeedNumber(n);
+  if (est != null && Number.isFinite(est) && est > 0) {
+    return `–（${formatSpeedNumber(est)}）`;
+  }
+  return "–";
 }
