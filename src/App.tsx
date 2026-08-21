@@ -95,17 +95,12 @@ function isMeaningfulLifetimeGap(
 }
 
 function defaultCustomRange(): { from: string; to: string } {
-  const to = new Date();
-  to.setHours(0, 0, 0, 0);
-  const from = new Date(to);
-  from.setDate(from.getDate() - 6);
-  const fmt = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-  return { from: fmt(from), to: fmt(to) };
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const today = `${y}-${m}-${day}`;
+  return { from: today, to: today };
 }
 
 const VIEWS = [
@@ -226,11 +221,12 @@ function isUnknownModel(name?: string | null): boolean {
 /** 思考档位色：附属标记，不参与模型身份 */
 function variantTone(
   v?: string | null
-): "max" | "high" | "low" | "other" | null {
+): "max" | "high" | "medium" | "low" | "other" | null {
   if (!v) return null;
   const t = v.toLowerCase();
   if (t === "max" || t === "xhigh" || t === "extra-high") return "max";
   if (t === "high") return "high";
+  if (t === "medium" || t === "mid") return "medium";
   if (t === "low" || t === "fast" || t === "minimal") return "low";
   return "other";
 }
@@ -821,14 +817,11 @@ export default function App() {
     setRange(r);
     localStorage.setItem("token-stats:range", r);
     if (r === "custom") {
-      // 首次点自定义且日期异常时回落最近 7 天
-      if (!customFrom || !customTo || customFrom > customTo) {
-        const d = defaultCustomRange();
-        setCustomFrom(d.from);
-        setCustomTo(d.to);
-        localStorage.setItem("token-stats:customFrom", d.from);
-        localStorage.setItem("token-stats:customTo", d.to);
-      }
+      const d = defaultCustomRange();
+      setCustomFrom(d.from);
+      setCustomTo(d.to);
+      localStorage.setItem("token-stats:customFrom", d.from);
+      localStorage.setItem("token-stats:customTo", d.to);
     }
   }
 

@@ -1191,6 +1191,80 @@ button.brand-home.top-title.on-home .brand-dot {
   word-break: break-all;
 }
 
+.model-with-variant {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.model-base-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.variant-chip {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+.variant-chip.variant-max {
+  background: rgba(234, 88, 12, 0.12);
+  color: #c2410c;
+  border: 1px solid rgba(234, 88, 12, 0.28);
+}
+.variant-chip.variant-high {
+  background: rgba(124, 58, 237, 0.12);
+  color: #6d28d9;
+  border: 1px solid rgba(124, 58, 237, 0.28);
+}
+.variant-chip.variant-medium {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+  border: 1px solid rgba(14, 165, 233, 0.28);
+}
+.variant-chip.variant-low {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0f766e;
+  border: 1px solid rgba(13, 148, 136, 0.28);
+}
+.variant-chip.variant-other {
+  background: rgba(113, 113, 122, 0.12);
+  color: #52525b;
+  border: 1px solid rgba(113, 113, 122, 0.28);
+}
+:root[data-theme="dark"] .variant-chip.variant-max {
+  background: rgba(251, 146, 60, 0.22);
+  color: #fdba74;
+  border: 1px solid rgba(251, 146, 60, 0.35);
+}
+:root[data-theme="dark"] .variant-chip.variant-high {
+  background: rgba(147, 133, 217, 0.22);
+  color: #c4b5fd;
+  border: 1px solid rgba(147, 133, 217, 0.4);
+}
+:root[data-theme="dark"] .variant-chip.variant-medium {
+  background: rgba(56, 189, 248, 0.2);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.38);
+}
+:root[data-theme="dark"] .variant-chip.variant-low {
+  background: rgba(74, 167, 155, 0.2);
+  color: #5eead4;
+  border: 1px solid rgba(74, 167, 155, 0.35);
+}
+:root[data-theme="dark"] .variant-chip.variant-other {
+  background: rgba(161, 161, 170, 0.18);
+  color: #a1a1aa;
+  border: 1px solid rgba(161, 161, 170, 0.3);
+}
+
 .s-stats {
   margin-top: 9px;
   display: flex;

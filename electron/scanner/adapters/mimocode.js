@@ -12,11 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { agentPaths } from "../paths.js";
 import { normalizeAgentName } from "../agentLabel.js";
 import { durationFromRange } from "../speed.js";
-import {
-  makeSession,
-  normalizeModelName,
-  toIso,
-} from "../types.js";
+import { makeSession, splitModelParts, toIso } from "../types.js";
 
 export const id = "mimocode";
 export const displayName = "MiMo Code";
@@ -42,30 +38,23 @@ function parseJson(raw) {
 
 /**
  * @param {any} data
- * @returns {string | undefined}
+ * @returns {{ base?: string, variant?: string }}
  */
-function modelFromData(data) {
-  if (!data || typeof data !== "object") return undefined;
-  if (typeof data.modelID === "string" && data.modelID) {
-    return normalizeModelName(data.modelID) || undefined;
-  }
-  if (typeof data.modelId === "string" && data.modelId) {
-    return normalizeModelName(data.modelId) || undefined;
-  }
+function modelPartsFromData(data) {
+  if (!data || typeof data !== "object") return {};
   if (data.model && typeof data.model === "object") {
-    return (
-      normalizeModelName(
+    return splitModelParts({
+      id:
         data.model.modelID ||
-          data.model.modelId ||
-          data.model.id ||
-          data.model.model
-      ) || undefined
-    );
+        data.model.modelId ||
+        data.model.id ||
+        data.model.model,
+      variant: data.model.variant ?? data.variant,
+    });
   }
-  if (typeof data.model === "string") {
-    return normalizeModelName(data.model) || undefined;
-  }
-  return undefined;
+  const id = data.modelID || data.modelId || data.model;
+  if (id == null || id === "") return {};
+  return splitModelParts({ id: String(id), variant: data.variant });
 }
 
 /**
@@ -173,7 +162,7 @@ export function scan(ctx = {}) {
      *   input: number, output: number, reasoning: number,
      *   cacheRead: number, cacheWrite: number,
      *   cost: number, req: number, msg: number,
-     *   model?: string, agent?: string
+     *   model?: string, modelVariant?: string, agent?: string
      * }>} */
     const usage = new Map();
     /** @type {Map<string, number>} */
@@ -206,7 +195,8 @@ export function scan(ctx = {}) {
       const parts = normalizeTokenParts(tokens);
       if (!parts) continue;
 
-      const model = modelFromData(data);
+      const mp = modelPartsFromData(data);
+      const model = mp.base;
       const agent = agentFromData(data, row.agent_id);
 
       const cur = usage.get(sid) || {
@@ -227,6 +217,7 @@ export function scan(ctx = {}) {
       cur.req += 1;
       if (data.cost != null) cur.cost += Number(data.cost) || 0;
       if (model) cur.model = model;
+      if (mp.variant) cur.modelVariant = mp.variant;
       if (agent) cur.agent = agent;
       usage.set(sid, cur);
 
@@ -283,6 +274,7 @@ export function scan(ctx = {}) {
           title: row.title || undefined,
           cwd: row.directory || undefined,
           model: u?.model,
+          modelVariant: u?.modelVariant,
           startedAt: toIso(row.time_created),
           lastUsedAt: toIso(row.time_updated),
           messageCount: msgCount.get(sid) || 0,
@@ -366,7 +358,8 @@ export function getDetail(sessionId) {
       const parts = normalizeTokenParts(data.tokens);
       if (!parts) continue;
 
-      const model = modelFromData(data) || "(unknown)";
+      const mp = modelPartsFromData(data);
+      const model = mp.base || "(unknown)";
       const agentName = agentFromData(data, row.agent_id);
       i += 1;
       turns.push({
@@ -378,6 +371,7 @@ export function getDetail(sessionId) {
             row.time_created
         ),
         model,
+        modelVariant: mp.variant,
         agentName,
         inputTokens: parts.input,
         outputTokens: parts.output,

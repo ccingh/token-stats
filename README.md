@@ -50,7 +50,7 @@
 | **11 个工具** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness / Freebuff |
 | **多维汇总** | 按工具、模型、项目、日期；趋势图与 53 周热力图 |
 | **请求口径** | 请求 / Turn / 消息数、缓存命中、子会话并账 |
-| **模型主名** | 思考档位（max / high）只做彩色标记，不拆散模型统计 |
+| **模型主名** | 思考档位只做彩色标记，不拆散模型统计。有落盘档位的会显示：OpenCode / Codex / dsh / Grok / Kimi / ZCode / Pi（MiMo 有 `variant` 时同样显示）。Claude / Reasonix / Freebuff 本地没有档位字段 |
 | **成本** | 刊例价 USD + 官方人民币；`-free` 记 0；长上下文按单次请求选档 |
 | **会话明细** | Turn 级用量、Agent 汇总、对话预览（仅桌面读本地） |
 | **云同步** | 可选，传到你自己的 Supabase；手机只读 |

@@ -1740,6 +1740,11 @@ tbody tr:hover td {
   color: #c4b5fd;
   border: 1px solid rgba(147, 133, 217, 0.4);
 }
+.variant-chip.variant-medium {
+  background: rgba(56, 189, 248, 0.2);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.38);
+}
 .variant-chip.variant-low {
   background: rgba(74, 167, 155, 0.2);
   color: #5eead4;

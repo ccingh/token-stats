@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
-import { makeSession, toIso } from "../types.js";
+import { makeSession, normalizeModelVariant, toIso } from "../types.js";
 import { sanitizeGenMs } from "../speed.js";
 
 export const id = "pi";
@@ -164,6 +164,8 @@ async function parseSessionFile(file, scannedAt, meta, hourly) {
   let startedAt;
   let lastUsedAt;
   let model;
+  /** @type {string | undefined} */
+  let modelVariant;
   let input = 0;
   let output = 0;
   let cacheRead = 0;
@@ -198,6 +200,10 @@ async function parseSessionFile(file, scannedAt, meta, hourly) {
       if (obj.timestamp) lastUsedAt = toIso(obj.timestamp) || lastUsedAt;
     } else if (type === "model_change" && obj.model) {
       model = typeof obj.model === "string" ? obj.model : obj.model?.id || model;
+    } else if (type === "thinking_level_change") {
+      modelVariant = normalizeModelVariant(
+        obj.thinkingLevel ?? obj.configured
+      );
     } else if (type === "mode_change" && obj.mode != null && !meta.isSubagent) {
       const m = String(obj.mode);
       if (m && m !== "none") {
@@ -256,6 +262,7 @@ async function parseSessionFile(file, scannedAt, meta, hourly) {
     title,
     cwd,
     model,
+    modelVariant,
     startedAt,
     lastUsedAt,
     messageCount: messageCount || undefined,
@@ -337,6 +344,8 @@ export async function getDetail(sessionId) {
         const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
         let currentModel;
         /** @type {string | undefined} */
+        let currentVariant;
+        /** @type {string | undefined} */
         let currentModeAgent = rel.isSubagent ? rel.agentName : undefined;
         for await (const line of rl) {
           if (!line.trim()) continue;
@@ -352,6 +361,11 @@ export async function getDetail(sessionId) {
           if (obj.type === "model_change" && obj.model) {
             currentModel =
               typeof obj.model === "string" ? obj.model : obj.model?.id || currentModel;
+          }
+          if (obj.type === "thinking_level_change") {
+            currentVariant = normalizeModelVariant(
+              obj.thinkingLevel ?? obj.configured
+            );
           }
           // mode_change 无 usage，须在 continue 前处理
           if (!rel.isSubagent && obj.type === "mode_change" && obj.mode) {
@@ -379,6 +393,7 @@ export async function getDetail(sessionId) {
             ts: toIso(obj.timestamp),
             durationMs: sanitizeGenMs(msg.duration) || undefined,
             model,
+            modelVariant: currentVariant,
             inputTokens: input,
             outputTokens: output,
             cacheReadTokens: cacheRead,
@@ -430,6 +445,8 @@ export async function getDetail(sessionId) {
   let title;
   let currentModel;
   /** @type {string | undefined} */
+  let currentVariant;
+  /** @type {string | undefined} */
   let currentModeAgent =
     item && item.isSubagent ? item.agentName || undefined : undefined;
 
@@ -450,6 +467,11 @@ export async function getDetail(sessionId) {
     if (obj.type === "model_change" && obj.model) {
       currentModel =
         typeof obj.model === "string" ? obj.model : obj.model?.id || currentModel;
+    }
+    if (obj.type === "thinking_level_change") {
+      currentVariant = normalizeModelVariant(
+        obj.thinkingLevel ?? obj.configured
+      );
     }
     if (!(item && item.isSubagent) && obj.type === "mode_change" && obj.mode) {
       const m = String(obj.mode);
@@ -474,6 +496,7 @@ export async function getDetail(sessionId) {
       index: i,
       ts: toIso(obj.timestamp),
       model,
+      modelVariant: currentVariant,
       inputTokens: input,
       outputTokens: output,
       cacheReadTokens: cacheRead,

@@ -50,7 +50,7 @@ Local logs feed the desktop app. Cloud sync is optional and only sends a stats s
 | **11 tools** | OpenCode / Claude / Codex / Grok Build / Kimi / ZCode / Pi / Reasonix / MiMo Code / DeepSeek Harness / Freebuff |
 | **Breakdowns** | By tool, model, project, and day; trend chart and 53-week heatmap |
 | **Request grain** | Requests / turns / messages, cache hits, child-session rollup |
-| **Base model** | Thinking tiers (max / high) are badges only; they do not split model totals |
+| **Base model** | Thinking tiers are badges only; they do not split model totals. Shown when the tool persisted a tier: OpenCode / Codex / dsh / Grok / Kimi / ZCode / Pi (MiMo too if `variant` is present). Claude / Reasonix / Freebuff logs have no tier field |
 | **Cost** | List prices in USD + official CNY; `-free` is $0; long context is per request |
 | **Session detail** | Per-turn usage, agent rollup, chat preview (desktop, local files only) |
 | **Cloud sync** | Optional upload to **your** Supabase; phone is read-only |

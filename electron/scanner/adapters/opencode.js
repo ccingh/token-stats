@@ -365,14 +365,16 @@ export function scan(ctx = {}) {
         hourlyFromMsgs,
       });
     }
+    // skip 必须是快照。scanMessageTable 会往 hourlyFromMsgs 里 add，
+    // 若把同一 Set 当 skip，V1 会话会在第一轮之后被自己跳过（只剩冷启动那次，命中率严重偏低）。
+    const skipV1IfInV2 = new Set(hourlyFromMsgs);
     scanMessageTable(db, {
       table: "message",
       hourly,
       modelFromMsgs,
       reqFromMsgs,
       hourlyFromMsgs,
-      // 已从 session_message 入桶的会话不再扫旧 message
-      skipSessionIds: hourlyFromMsgs,
+      skipSessionIds: skipV1IfInV2,
     });
 
     /** @type {Set<string>} */

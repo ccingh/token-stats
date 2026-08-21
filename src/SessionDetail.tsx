@@ -20,11 +20,12 @@ function isPlaceholderAgent(name?: string): boolean {
 
 function variantTone(
   v?: string | null
-): "max" | "high" | "low" | "other" | null {
+): "max" | "high" | "medium" | "low" | "other" | null {
   if (!v) return null;
   const t = v.toLowerCase();
   if (t === "max" || t === "xhigh" || t === "extra-high") return "max";
   if (t === "high") return "high";
+  if (t === "medium" || t === "mid") return "medium";
   if (t === "low" || t === "fast" || t === "minimal") return "low";
   return "other";
 }

@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { agentPaths } from "../paths.js";
-import { makeSession, splitInclusiveUsage, toIso } from "../types.js";
+import {
+  makeSession,
+  normalizeModelVariant,
+  splitInclusiveUsage,
+  splitModelParts,
+  toIso,
+} from "../types.js";
 import { durationFromRange } from "../speed.js";
 
 export const id = "zcode";
@@ -160,9 +166,11 @@ function usageFromMessages(db, needIds, hourly, hourlyFromUsage) {
     cur.cacheWrite += parts.cacheWrite;
     cur.count += 1;
     if (data.cost != null) cur.cost += Number(data.cost) || 0;
-    const model =
-      data.modelID || data.modelId || data.model || data.model_id || undefined;
-    if (model) cur.model = String(model);
+    const mp = splitModelParts(
+      data.modelID || data.modelId || data.model || data.model_id
+    );
+    if (mp.base) cur.model = mp.base;
+    if (mp.variant) cur.modelVariant = mp.variant;
     usage.set(sid, cur);
 
     const ts =
@@ -177,7 +185,7 @@ function usageFromMessages(db, needIds, hourly, hourlyFromUsage) {
         reasoningTokens: parts.reasoning,
         cacheReadTokens: parts.cacheRead,
         cacheWriteTokens: parts.cacheWrite,
-        model: model ? String(model) : undefined,
+        model: mp.base || undefined,
         sessionId: sid,
         requestCount: 1,
         singleRequest: true,
@@ -243,20 +251,32 @@ export function scan(ctx = {}) {
       sessions.set(String(row.id), row);
     }
 
-    /** @type {Map<string, {input:number,output:number,reasoning:number,cacheRead:number,cacheWrite:number,model?:string,count:number,cost?:number}>} */
+    /** @type {Map<string, {input:number,output:number,reasoning:number,cacheRead:number,cacheWrite:number,model?:string,modelVariant?:string,count:number,cost?:number}>} */
     const usage = new Map();
     /** @type {Set<string>} */
     const hourlyFromUsage = new Set();
     try {
       // 按条 split 再汇总（不能对「含 cache 的 input」先 SUM 再 split）
-      const detailRows = db
-        .prepare(
-          `SELECT session_id, model_id, input_tokens, output_tokens, reasoning_tokens,
-                  cache_read_input_tokens, cache_creation_input_tokens,
-                  started_at, completed_at, raw_usage_json
-           FROM model_usage`
-        )
-        .all();
+      let detailRows = [];
+      try {
+        detailRows = db
+          .prepare(
+            `SELECT session_id, model_id, variant, input_tokens, output_tokens, reasoning_tokens,
+                    cache_read_input_tokens, cache_creation_input_tokens,
+                    started_at, completed_at, raw_usage_json
+             FROM model_usage`
+          )
+          .all();
+      } catch {
+        detailRows = db
+          .prepare(
+            `SELECT session_id, model_id, input_tokens, output_tokens, reasoning_tokens,
+                    cache_read_input_tokens, cache_creation_input_tokens,
+                    started_at, completed_at, raw_usage_json
+             FROM model_usage`
+          )
+          .all();
+      }
 
       for (const row of detailRows) {
         const parts = partsFromUsageRow(row);
@@ -286,6 +306,8 @@ export function scan(ctx = {}) {
         cur.cacheWrite += parts.cacheWrite;
         cur.count += 1;
         if (!cur.model && row.model_id) cur.model = row.model_id;
+        const v = normalizeModelVariant(row.variant);
+        if (v) cur.modelVariant = v;
         usage.set(sid, cur);
 
         if (hourly?.add) {
@@ -372,6 +394,7 @@ export function scan(ctx = {}) {
           title: meta.title || undefined,
           cwd: meta.directory || undefined,
           model: u.model,
+          modelVariant: u.modelVariant,
           startedAt: toIso(meta.time_created),
           lastUsedAt: toIso(meta.time_updated),
           messageCount: u.count || undefined,
@@ -545,7 +568,7 @@ export function getDetail(sessionId) {
     try {
       rows = db
         .prepare(
-          `SELECT model_id, provider_id, input_tokens, output_tokens, reasoning_tokens,
+          `SELECT model_id, provider_id, variant, input_tokens, output_tokens, reasoning_tokens,
                   cache_read_input_tokens, cache_creation_input_tokens,
                   started_at, completed_at, status, raw_usage_json,
                   agent, mode, task_type
@@ -555,20 +578,34 @@ export function getDetail(sessionId) {
         )
         .all(sessionId);
     } catch {
-      // 旧库可能无 agent/mode 列
+      // 旧库可能无 variant 或 agent/mode 列
       try {
         rows = db
           .prepare(
             `SELECT model_id, provider_id, input_tokens, output_tokens, reasoning_tokens,
                     cache_read_input_tokens, cache_creation_input_tokens,
-                    started_at, completed_at, status, raw_usage_json
+                    started_at, completed_at, status, raw_usage_json,
+                    agent, mode, task_type
              FROM model_usage
              WHERE session_id = ?
              ORDER BY COALESCE(completed_at, started_at, 0) ASC`
           )
           .all(sessionId);
       } catch {
-        rows = [];
+        try {
+          rows = db
+            .prepare(
+              `SELECT model_id, provider_id, input_tokens, output_tokens, reasoning_tokens,
+                      cache_read_input_tokens, cache_creation_input_tokens,
+                      started_at, completed_at, status, raw_usage_json
+               FROM model_usage
+               WHERE session_id = ?
+               ORDER BY COALESCE(completed_at, started_at, 0) ASC`
+            )
+            .all(sessionId);
+        } catch {
+          rows = [];
+        }
       }
     }
 
@@ -597,6 +634,7 @@ export function getDetail(sessionId) {
           index: i,
           ts: toIso(row.completed_at || row.started_at),
           model,
+          modelVariant: normalizeModelVariant(row.variant),
           agentName,
           inputTokens: parts.input,
           outputTokens: parts.output,
@@ -655,9 +693,10 @@ export function getDetail(sessionId) {
         ) {
           continue;
         }
-        const model = String(
-          data.modelID || data.modelId || data.model || "(unknown)"
+        const mp = splitModelParts(
+          data.modelID || data.modelId || data.model
         );
+        const model = mp.base || "(unknown)";
         const agentName = labelFromUsageRow({
           agent: data.agent || data.agentName,
           mode: data.mode,
@@ -668,6 +707,7 @@ export function getDetail(sessionId) {
           index: i,
           ts: undefined,
           model,
+          modelVariant: mp.variant,
           agentName,
           inputTokens: parts.input,
           outputTokens: parts.output,

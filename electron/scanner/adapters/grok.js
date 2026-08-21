@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
-import { makeSession, toIso } from "../types.js";
+import { makeSession, normalizeModelVariant, toIso } from "../types.js";
 import { normalizeAgentName } from "../agentLabel.js";
 import { parseTs } from "../hourly.js";
 import { sanitizeEstGenMs, sanitizeGenMs, toUnixMs } from "../speed.js";
@@ -678,6 +678,7 @@ export async function scan(ctx = {}) {
           (neverRan ? "（未调用模型）" : undefined),
         cwd: summary?.info?.cwd || undefined,
         model,
+        modelVariant: normalizeModelVariant(summary.reasoning_effort),
         startedAt: toIso(summary.created_at),
         lastUsedAt: toIso(summary.last_active_at || summary.updated_at) || usage?.lastTs,
         messageCount: summary.num_messages || summary.num_chat_messages,

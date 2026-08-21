@@ -31,6 +31,8 @@ import type {
 import {
   formatTokPerSec,
   modelAggKey,
+  prettyModel,
+  prettyModelVariant,
   sanitizeSnapshotPayload,
   tokensPerSec,
 } from "./types";
@@ -62,6 +64,40 @@ function isUnknownModel(name?: string | null): boolean {
     s === "未知" ||
     s === "<synthetic>" ||
     /^<?synthetic>?$/i.test(s)
+  );
+}
+
+function variantTone(
+  v?: string | null
+): "max" | "high" | "medium" | "low" | "other" | null {
+  if (!v) return null;
+  const t = v.toLowerCase();
+  if (t === "max" || t === "xhigh" || t === "extra-high") return "max";
+  if (t === "high") return "high";
+  if (t === "medium" || t === "mid") return "medium";
+  if (t === "low" || t === "fast" || t === "minimal") return "low";
+  return "other";
+}
+
+function ModelNameWithVariant({
+  model,
+  variant,
+}: {
+  model?: string | null;
+  variant?: string | null;
+}) {
+  const base = prettyModel(model) || model || UNKNOWN_MODEL;
+  const v = prettyModelVariant(model, variant);
+  const tone = variantTone(v);
+  return (
+    <span className="model-with-variant">
+      <span className="model-base-name">{base}</span>
+      {v && tone ? (
+        <span className={`variant-chip variant-${tone}`} title={`思考档位 · ${v}`}>
+          {v}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -4008,7 +4044,11 @@ function SessionItem({
         <span className="s-time">{formatRelative(s.lastUsedAt || s.startedAt)}</span>
       </div>
       <div className="s-title">{s.title || s.sessionId || s.id}</div>
-      {s.model && <div className="s-model">{s.model}</div>}
+      {(s.model || s.modelVariant) && (
+        <div className="s-model">
+          <ModelNameWithVariant model={s.model} variant={s.modelVariant} />
+        </div>
+      )}
       <div className="s-stats">
         <span>
           {formatTokens(s.totalTokens || 0)}
@@ -4102,7 +4142,16 @@ function SessionDetailSheet({
           <div className="detail-grid">
             <DetailRow
               label="模型"
-              value={s.model || "–"}
+              value={
+                s.model || s.modelVariant ? (
+                  <ModelNameWithVariant
+                    model={s.model}
+                    variant={s.modelVariant}
+                  />
+                ) : (
+                  "–"
+                )
+              }
               className={
                 s.model && isUnknownModel(s.model) ? "model-unknown" : undefined
               }
@@ -4185,7 +4234,7 @@ function DetailRow({
   className,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   mono?: boolean;
   className?: string;
 }) {

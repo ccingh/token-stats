@@ -144,7 +144,16 @@ export function normalizeModelVariant(v?: string | null): string | undefined {
   const t = String(v).trim();
   if (!t) return undefined;
   const low = t.toLowerCase();
-  if (low === "default" || low === "none" || low === "null") return undefined;
+  if (
+    low === "default" ||
+    low === "none" ||
+    low === "null" ||
+    low === "off" ||
+    low === "disabled" ||
+    low === "false"
+  ) {
+    return undefined;
+  }
   return low;
 }
 

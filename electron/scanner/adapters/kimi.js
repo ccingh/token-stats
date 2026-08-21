@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { agentPaths } from "../paths.js";
-import { makeSession, toIso } from "../types.js";
+import { makeSession, normalizeModelVariant, toIso } from "../types.js";
 import { sanitizeGenMs } from "../speed.js";
 
 export const id = "kimi";
@@ -127,6 +127,8 @@ async function sumWire(wirePath, sessionId) {
   let cacheRead = 0;
   let cacheWrite = 0;
   let model;
+  /** @type {string | undefined} */
+  let modelVariant;
   let lastTs;
   let messageCount = 0;
   /** @type {string | undefined} */
@@ -146,7 +148,8 @@ async function sumWire(wirePath, sessionId) {
       line.includes("usage") ||
       line.includes("llmStreamDurationMs") ||
       line.includes("llmFirstTokenLatencyMs") ||
-      line.includes("llmServerDecodeMs")
+      line.includes("llmServerDecodeMs") ||
+      line.includes("thinkingEffort")
     ) {
       let obj;
       try {
@@ -155,6 +158,9 @@ async function sumWire(wirePath, sessionId) {
         continue;
       }
       if (obj.profileName) profileName = String(obj.profileName);
+      if (obj.thinkingEffort != null) {
+        modelVariant = normalizeModelVariant(obj.thinkingEffort);
+      }
       const ev = obj.event && typeof obj.event === "object" ? obj.event : obj;
       const streamMs =
         Number(ev.llmStreamDurationMs) ||
@@ -237,6 +243,7 @@ async function sumWire(wirePath, sessionId) {
     cacheRead,
     cacheWrite,
     model,
+    modelVariant,
     lastTs,
     messageCount,
     profileName,
@@ -284,6 +291,8 @@ async function sumAllWires(sessionDir, sessionId) {
   let cacheRead = 0;
   let cacheWrite = 0;
   let model;
+  /** @type {string | undefined} */
+  let modelVariant;
   let lastTs;
   let messageCount = 0;
   /** @type {string[]} */
@@ -300,6 +309,7 @@ async function sumAllWires(sessionDir, sessionId) {
       cacheWrite += u.cacheWrite;
       messageCount += u.messageCount;
       if (u.model) model = u.model;
+      if (u.modelVariant) modelVariant = u.modelVariant;
       if (u.lastTs && (!lastTs || u.lastTs > lastTs)) lastTs = u.lastTs;
       // agents/<folder>/wire.jsonl — 展示名优先 profileName
       const folder = path.basename(path.dirname(w));
@@ -320,6 +330,7 @@ async function sumAllWires(sessionDir, sessionId) {
     cacheRead,
     cacheWrite,
     model,
+    modelVariant,
     lastTs,
     messageCount,
     childAgents: agentParts,
@@ -389,6 +400,7 @@ export async function scan(ctx = {}) {
         title,
         cwd,
         model: usage.model,
+        modelVariant: usage.modelVariant,
         startedAt,
         lastUsedAt: lastUsedAt || usage.lastTs,
         messageCount: usage.messageCount || undefined,
@@ -476,11 +488,14 @@ export async function getDetail(sessionId) {
     const stream = fs.createReadStream(wire, { encoding: "utf8" });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let pendingMs = 0;
+    /** @type {string | undefined} */
+    let currentVariant;
     for await (const line of rl) {
       if (
         !line.includes("usage.record") &&
         !line.includes("llmStreamDurationMs") &&
-        !line.includes("llmFirstTokenLatencyMs")
+        !line.includes("llmFirstTokenLatencyMs") &&
+        !line.includes("thinkingEffort")
       ) {
         continue;
       }
@@ -489,6 +504,9 @@ export async function getDetail(sessionId) {
         obj = JSON.parse(line);
       } catch {
         continue;
+      }
+      if (obj.thinkingEffort != null) {
+        currentVariant = normalizeModelVariant(obj.thinkingEffort);
       }
       const ev = obj.event && typeof obj.event === "object" ? obj.event : obj;
       const wall = sanitizeGenMs(
@@ -523,6 +541,7 @@ export async function getDetail(sessionId) {
         index: i,
         ts: toIso(obj.time),
         model,
+        modelVariant: currentVariant,
         inputTokens: input,
         outputTokens: output,
         cacheReadTokens: cacheRead,

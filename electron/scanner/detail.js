@@ -16,7 +16,7 @@ import * as codex from "./adapters/codex.js";
 import * as dsh from "./adapters/dsh.js";
 import * as freebuff from "./adapters/freebuff.js";
 import { agentPaths } from "./paths.js";
-import { toIso } from "./types.js";
+import { normalizeModelVariant, toIso } from "./types.js";
 import { normalizeAgentName } from "./agentLabel.js";
 
 /**
@@ -45,11 +45,13 @@ async function grokDetail(sessionId) {
     summary?.current_model_id
   );
   const sessionAgent = normalizeAgentName(summary?.agent_name);
+  const sessionVariant = normalizeModelVariant(summary?.reasoning_effort);
 
   /**
    * @param {{
    *   ts?: string,
    *   model?: string,
+   *   modelVariant?: string,
    *   inputTokens: number,
    *   outputTokens: number,
    *   cacheReadTokens: number,
@@ -64,6 +66,7 @@ async function grokDetail(sessionId) {
       index: turns.length + 1,
       ts: row.ts,
       model,
+      modelVariant: row.modelVariant || sessionVariant,
       agentName: sessionAgent,
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
